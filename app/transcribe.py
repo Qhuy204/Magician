@@ -8,6 +8,7 @@ from pathlib import Path
 import soundfile as sf
 from openai import OpenAI
 
+from . import runctx
 from .config import settings
 
 # whisper verbose_json trả tên ngôn ngữ đầy đủ
@@ -30,7 +31,7 @@ def lang_code(name: str | None) -> str | None:
 
 def speech_spans(audio: Path, total: float) -> list[tuple[float, float]]:
     """Tìm các đoạn có tiếng nói dựa trên khoảng lặng của vocal stem."""
-    err = subprocess.run(
+    err = runctx.run(
         ["ffmpeg", "-hide_banner", "-i", str(audio), "-af", f"silencedetect=n=-35dB:d={MIN_SILENCE}", "-f", "null", "-"],
         capture_output=True, text=True,
     ).stderr

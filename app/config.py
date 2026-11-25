@@ -73,11 +73,48 @@ class Settings(BaseSettings):
     max_tempo: float = 1.3
     # 0 = tự tính theo số XTTS worker
     item_concurrency: int = 0
+    # Khởi động sẵn worker TTS lúc startup (tắt khi chạy test)
+    tts_warmup: bool = True
+
+    # --- Vận hành: queue / retry / timeout / dọn dẹp ---
+    # SQLite lưu job + event + webhook outbox. Trống = DATA_DIR/magician.db
+    db_path: Path | None = None
+    # Timeout từng stage (giây), quá thì kill và retry 1 lần (error_code=stage_timeout)
+    stage_timeouts: str = ("download:180,separate:240,transcribe:240,triage:180,ocr:300,plan:240,"
+                           "rewrite:180,tts:240,render:900,mux:180")
+    # Timeout 1 lần gọi worker TTS; quá thì kill worker, spawn lại
+    tts_call_timeout: float = 120
+    download_connect_timeout: float = 30
+    # Ổ chứa DATA_DIR còn ít hơn => /ready=503, POST /jobs=503, ngừng lấy item mới
+    min_free_gb: float = 5
+    work_retention_hours: float = 24
+    output_retention_days: float = 7
+    job_retention_days: float = 30
+    # Webhook: gửi thêm event item.done mỗi khi 1 item xong (ngoài job.done)
+    webhook_item_events: bool = True
+    # Giây chờ giữa các lần gửi lại webhook (số lần thử = len + 1)
+    webhook_retry_delays: str = "10,30,120,300,900,1800"
+    webhook_timeout: float = 20
+    # Gửi lại cùng ad (cùng video + reasons) khi đang xử lý => trả job cũ
+    dedup_active: bool = True
+    # Sau khi gặp CUDA OOM: giảm item_concurrency trong N phút
+    oom_cooldown_minutes: float = 10
+    log_dir: Path | None = None
+    log_max_mb: int = 50
+    log_backups: int = 10
+
+    def stage_timeout_map(self) -> dict[str, float]:
+        return {k.strip(): float(v) for k, v in (x.split(":", 1) for x in self.stage_timeouts.split(",") if ":" in x)}
+
+    def webhook_delays(self) -> list[float]:
+        return [float(x) for x in self.webhook_retry_delays.split(",") if x.strip()]
 
 
 settings = Settings()
 if not settings.models_dir or str(settings.models_dir) in ("", "."):
     settings.models_dir = settings.data_dir / "models"
+settings.db_path = settings.db_path or settings.data_dir / "magician.db"
+settings.log_dir = settings.log_dir or settings.data_dir / "logs"
 if not settings.file_signing_key:
     import secrets
 

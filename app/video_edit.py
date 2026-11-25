@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 import soundfile as sf
 
+from . import runctx
 from .config import settings
 from .hardware import detect
 from .vision import TextTrack, VideoInfo
@@ -197,7 +198,7 @@ def _draw_lines(lines: list[str], font: Path, size: int, W: int, H: int, color: 
             draws.append(f"drawtext=fontfile='{esc(font)}':textfile='{esc(tf)}':fontsize={size}:fontcolor={color}"
                          f":borderw={max(1, size // 12)}:bordercolor={border}:x=(w-text_w)/2:y={top + i * line_h}+({line_h}-th)/2")
         out = Path(td) / "t.png"
-        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black@0.0:s={W}x{H},format=rgba",
+        runctx.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black@0.0:s={W}x{H},format=rgba",
                         "-vf", ",".join(draws), "-frames:v", "1", str(out)], check=True, capture_output=True)
         return np.array(Image.open(out).convert("RGBA"))
 
@@ -409,11 +410,16 @@ def render(video: Path, audio_wav: Path | None, out: Path, info: VideoInfo, regi
          "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)],
         stdin=subprocess.PIPE,
     )
+    if ctx := runctx.current():
+        ctx.register(dec)
+        ctx.register(enc)
     try:
         i = 0
         while len(buf := dec.stdout.read(size)) == size:
             t = (i + 0.5) / info.fps
             i += 1
+            if i % 30 == 0:
+                runctx.check()
             if any(s <= t < e for s, e in cuts):
                 continue
             frame = np.frombuffer(buf, np.uint8).reshape(h, w, 3)
@@ -423,5 +429,9 @@ def render(video: Path, audio_wav: Path | None, out: Path, info: VideoInfo, regi
         dec.wait()
         enc.wait()
         cut_wav.unlink(missing_ok=True)
+        if ctx := runctx.current():
+            ctx.unregister(dec)
+            ctx.unregister(enc)
+    runctx.check()
     if enc.returncode:
         raise RuntimeError(f"ffmpeg encode failed ({enc.returncode})")

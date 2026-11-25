@@ -2,7 +2,8 @@
 
 API service sửa voice-over của TikTok ad bị reject vì policy. Nhận JSON danh sách ad (dạng `historical_reviews`),
 tải video, tìm câu thoại vi phạm, viết lại cho đúng policy, đọc lại bằng giọng clone của chính người nói trong video,
-ghép vào video gốc và gửi kết quả về qua webhook.
+ghép vào video gốc và gửi kết quả về qua webhook. Có hàng đợi bền (SQLite), tự retry theo loại lỗi, huỷ / kill job,
+chạy tiếp sau restart, chống gửi trùng, webhook có hàng đợi gửi lại, health / metrics.
 
 - Production: `https://magician.qhuy204.id.vn`
 - Ngôn ngữ giọng đọc: en, hi, pt, ar (UAE/Gulf), es, fr, de, it, pl, tr, ru, nl, cs, zh-cn, hu, ko, ja
@@ -83,6 +84,7 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers
 ```
 Cần `ffmpeg` và `ffprobe` trong PATH. Worker TTS khởi động lúc start (OmniVoice ~5–10s, XTTS ~30s mỗi worker); trong lúc đó job vẫn nhận bình thường.
+Chạy thường trực (tự restart, tự chạy khi đăng nhập): `scripts\service.ps1 install`, xem [Vận hành](#9-vận-hành).
 
 ---
 
@@ -147,17 +149,26 @@ Header `X-API-Key: <secret>`. Đơn giản hơn nhưng không chống được r
 
 | Method | Path | Auth | Mô tả |
 |---|---|---|---|
-| POST | `/jobs` | ✓ | Tạo job, trả về ngay `202` |
-| GET | `/jobs/{job_id}` | ✓ | Trạng thái và kết quả (chỉ xem được job của chính client đó) |
+| POST | `/jobs` | ✓ | Tạo job, trả về ngay `202` (gửi trùng → trả job cũ) |
+| GET | `/jobs` | ✓ | Danh sách job của client (`?state=&limit=&before=`) |
+| GET | `/jobs/{job_id}` | ✓ | Trạng thái, tiến độ, kết quả từng item |
+| GET | `/jobs/{job_id}/events` | ✓ | Timeline: từng lần chạy, retry, lỗi, kill (`?after=<id>` để lấy tiếp) |
+| POST | `/jobs/{job_id}/retry` | ✓ | Chạy lại item lỗi / bị huỷ, có thể kèm link video mới |
+| POST | `/jobs/{job_id}/cancel` | ✓ | Huỷ / kill cả job hoặc một số item |
+| GET | `/jobs/{job_id}/webhooks` | ✓ | Lịch sử gửi webhook của job |
+| POST | `/jobs/{job_id}/webhooks/resend` | ✓ | Gửi lại webhook `job.done` |
 | GET | `/files/{job_id}/{smart_ad_id}.mp4?exp=&sig=` | link ký | Tải video kết quả |
-| GET | `/status` | ✓ | Phần cứng, engine + số worker TTS, độ dài hàng đợi |
-| GET | `/health` | – | `{"ok": true}` |
+| GET | `/status` | ✓ | Readiness chi tiết, hàng đợi, lỗi 1h gần nhất, webhook, phần cứng, worker TTS |
+| GET | `/metrics` | ✓ hoặc localhost | Prometheus text format |
+| GET | `/ready` | – | `200 {"ready":true}` / `503 {"ready":false}` (DB, ffmpeg, scheduler, worker TTS, đĩa) |
+| GET | `/health` | – | `{"ok": true}` (process còn sống) |
 
 `/docs` và `/openapi.json` tắt mặc định (`ENABLE_DOCS=true` để bật).
 
 ### POST /jobs
 
 Query: `callback_url` (tùy chọn, ghi đè field trong body).
+Header tùy chọn: `Idempotency-Key: <chuỗi ≤128 ký tự>`. Gửi lại cùng key (vd retry khi mạng lỗi) thì nhận lại đúng job cũ, không tạo job mới.
 
 Body: JSON review y như dashboard xuất ra. Nhận cả 2 format:
 - cũ: `{"advertiser_id", "campaign_name", "items": [{"smart_ad_id", "smart_ad_name", "status", "video_id", "video_url", "reject_reasons": [str]}]}`
@@ -193,7 +204,7 @@ Field thừa được giữ nguyên, không gây lỗi. Ví dụ format mới:
 | `smart_ad_id` | ✓ | Dùng làm tên file kết quả |
 | `status` / `review_status` | | Chỉ xử lý nếu thuộc `process_statuses` |
 | `video_url` | | Bắt buộc với item được xử lý. Chỉ https, domain trong `VIDEO_URL_ALLOWLIST` |
-| `video_id` / `rejected_video_id`, `preview_video_id` | | Khớp reject reason của TikTok với đúng video |
+| `video_id` / `rejected_video_id`, `preview_video_id` | | Khớp reject reason của TikTok với đúng video; cũng dùng để nhận ra ad gửi trùng |
 | `reasons` / `reject_reasons` | | Mỗi phần tử là chuỗi hoặc object `{category, detail, timestamps, affected_regions, affected_placements, violation_frames}`. `timestamps` dạng `"0:22–0:24"` giúp planner tìm đúng chỗ. Có thì dùng luôn, không gọi TikTok API |
 | `violation_frames` | | URL ảnh frame vi phạm (nếu có); planner nhìn ảnh để xác định phần bị flag |
 | `callback_url` | | Webhook nhận kết quả, chỉ https |
@@ -201,9 +212,16 @@ Field thừa được giữ nguyên, không gây lỗi. Ví dụ format mới:
 
 Không có `reasons` và không cấu hình `TIKTOK_ACCESS_TOKEN` thì item ra `no_changes`.
 
+**Chống gửi trùng** (`DEDUP_ACTIVE=true`): một ad được coi là trùng nếu cùng client, cùng `smart_ad_id`, cùng video
+(`video_id`, hoặc path của `video_url` khi không có `video_id`) và cùng reasons với một item **đang chờ / đang chạy**.
+- Mọi ad trong request đều đang chạy ở 1 job khác → không tạo job mới, trả job đó kèm `"deduplicated": true`.
+- Chỉ một phần trùng → vẫn tạo job mới; ad trùng có `state: "skipped"` và `duplicate_of: "<job_id đang chạy>"`.
+- Ad đã xong (done / failed...) gửi lại thì chạy lại bình thường.
+
 Response `202`:
 ```json
-{"job_id": "dc8ef7f0ae22499692718be2adca6c0e", "status_url": "https://magician.qhuy204.id.vn/jobs/dc8e...", "items": 14}
+{"job_id": "dc8ef7f0ae22499692718be2adca6c0e", "status_url": "https://magician.qhuy204.id.vn/jobs/dc8e...",
+ "items": 14, "deduplicated": false, "state": "queued"}
 ```
 
 ### GET /jobs/{job_id}
@@ -211,17 +229,22 @@ Response `202`:
 {
   "job_id": "02bb2eb6d90741f7ae4ac0bbb0821a51",
   "client_id": "dashboard",
-  "state": "done",
+  "state": "running",
   "advertiser_id": "7687959493501976597",
   "campaign_name": "shieldy_17.11_hook_ar R1.2",
   "callback_url": "https://your-host/magician-webhook",
-  "callback_status": "HTTP 200",
-  "cache_hits": {"rewrite": 8, "tts": 36},
+  "callback_status": null,
+  "created_at": "2026-11-25T03:02:44.900Z", "started_at": "2026-11-25T03:02:45.010Z", "finished_at": null,
+  "progress": {"total": 3, "finished": 1, "done": 1, "running": 1, "retrying": 1},
+  "queue_position": 0,
+  "cache_hits": {},
   "items": [
     {
       "smart_ad_id": "1882107813581906",
       "smart_ad_name": "Ad group 2_10",
       "state": "done",
+      "stage": null, "attempt": 1, "error_code": null, "retryable": null, "next_retry_at": null,
+      "started_at": "2026-11-25T03:02:45.010Z", "finished_at": "2026-11-25T03:03:11.420Z",
       "language": "ar",
       "reject_reasons": ["Exaggerated or misleading claims about product functionality"],
       "edits": [
@@ -234,7 +257,7 @@ Response `202`:
       ],
       "output_video_url": "https://magician.qhuy204.id.vn/files/02bb.../1882107813581906.mp4?exp=1795600000&sig=...",
       "error": null,
-      "usage": {"transcribe_calls": 5, "transcribe_seconds": 15, "chat_calls": 1, "chat_prompt_tokens": 735, "chat_completion_tokens": 224},
+      "usage": {"transcribe_calls": 5, "transcribe_seconds": 15, "chat_calls": 3, "chat_prompt_tokens": 7350, "chat_completion_tokens": 924},
       "timings": {"download": 0.3, "separate": 1.2, "transcribe": 1.1, "triage": 3.3, "ocr": 7.2, "plan": 7.4, "rewrite": 2.6, "tts": 6.0, "render": 2.4},
       "plan": {
         "decision": "fix", "reason": "...", "fix_audio": true, "sync_captions": true,
@@ -245,52 +268,145 @@ Response `202`:
         {"type": "remove_region", "start": 3.0, "end": 5.0, "bbox": [0.17, 0.44, 0.83, 0.53], "what": "Red 500 SAR prize pop-up"},
         {"type": "replace_text", "track_ids": [27, 28], "new_text": "يساعدك التطبيق في حظر المكالمات المزعجة.", "texts": ["تطبيقنا يحظر 100% من المكالمات المزعجة", "مضمون!"]}
       ]
+    },
+    {
+      "smart_ad_id": "1882107813581907", "state": "running", "stage": "ocr", "attempt": 1
+    },
+    {
+      "smart_ad_id": "1882107813581908", "state": "retrying", "attempt": 1,
+      "error_code": "network", "retryable": true, "next_retry_at": "2026-11-25T03:03:20.000Z",
+      "error": "không kết nối được de-s3.storage.bunnycdn.com: ConnectTimeout: [WinError 10060] ..."
     }
   ]
 }
 ```
 
-Trạng thái job: `queued` → `running` → `done` | `failed` (`failed` gồm cả job bị gián đoạn do server restart).
+Trạng thái job: `queued` → `running` → `done` | `cancelled` (`failed` chỉ còn cho job cũ / không resume được).
+`done` nghĩa là mọi item đã kết thúc; item có thể `failed`, xem từng item. Gọi `/retry` thì job quay lại `running`.
+
+- `progress`: số item theo trạng thái; `finished` = số item đã kết thúc.
+- `queue_position`: số item của các job khác đang chờ trước job này (`null` nếu job không còn item chờ).
 
 Trạng thái item:
 
 | `state` | Ý nghĩa |
 |---|---|
-| `pending` / `running` | Đang chờ / đang xử lý |
+| `pending` | Đang chờ trong hàng đợi |
+| `running` | Đang xử lý; `stage` là bước hiện tại (`download`, `separate`, `transcribe`, `triage`, `ocr`, `plan`, `rewrite`, `tts`, `render`, `mux`) |
+| `retrying` | Lỗi tạm thời, tự chạy lại lúc `next_retry_at` |
 | `done` | Có video mới ở `output_video_url` |
-| `no_changes` | Không sửa; lý do nằm trong `error` và `plan` (không có reject reason, vi phạm ở bản chất sản phẩm, cần cắt quá nhiều...). `plan.stage = "triage"` nghĩa là bị dừng ở lượt lọc nhanh |
-| `skipped` | `status` không thuộc `process_statuses` |
-| `failed` | Lỗi, chi tiết trong `error` (vd link video hết hạn → 403) |
+| `no_changes` | Không sửa; lý do nằm trong `error` và `plan`. `error_code = "unfixable"` khi vi phạm ở bản chất sản phẩm, `"no_changes"` khi lý do khác (thiếu reason, cần cắt quá nhiều...) |
+| `skipped` | `status` không thuộc `process_statuses`, hoặc trùng ad đang chạy (`duplicate_of`) |
+| `failed` | Lỗi và đã hết lượt tự retry, xem `error_code` / `error`. `retryable: true` = gọi `/retry` có thể thành công |
+| `cancelled` | Bị huỷ qua `/cancel` |
+
+`attempt` = số lần item đã được chạy (tính cả lần tự retry).
+
+### `error_code` và cách retry
+
+Item lỗi được tự chạy lại theo loại lỗi. Lần chạy lại **dùng lại kết quả các bước đã xong** (video đã tải, audio đã tách,
+transcript, kết quả triage/plan/rewrite, câu TTS đã sinh), nên không tải lại video và không gọi lại OpenAI cho các bước đó.
+
+| `error_code` | Ví dụ | Tự retry | Gọi `/retry` |
+|---|---|---|---|
+| `network` | Timeout kết nối (WinError 10060), reset, CDN trả 429/5xx | 4 lần, chờ ~5s → 15s → 45s | ✓ |
+| `upstream_rate_limit` | OpenAI 429 | 6 lần, theo `Retry-After` (10s → 240s) | ✓ |
+| `upstream_error` | OpenAI 5xx / mất kết nối | 4 lần (10s → 90s) | ✓ |
+| `gpu_oom` | CUDA out of memory, paging file | 3 lần; concurrency tạm giảm một nửa trong `OOM_COOLDOWN_MINUTES` | ✓ |
+| `worker_crash` | Worker TTS chết / treo (bị kill sau `TTS_CALL_TIMEOUT`) | 3 lần, worker được spawn lại | ✓ |
+| `stage_timeout` | 1 bước chạy quá `STAGE_TIMEOUTS` | 2 lần | ✓ |
+| `source_expired` | Link video trả 401/403/404/410 (link ký hết hạn / sai chữ ký) | ✗ | ✓ kèm `video_urls` mới |
+| `upstream_auth` / `upstream_quota` | OpenAI key sai / hết quota | ✗ | sau khi sửa key |
+| `invalid_input` | File không phải video, quá `MAX_VIDEO_MB`, URL redirect vào IP nội bộ | ✗ | ✗ |
+| `internal` | Bug | ✗ | tuỳ |
+| `cancelled` | Bị huỷ | ✗ | ✓ |
+| `interrupted` | Job cũ bị gián đoạn trước khi có SQLite | ✗ | ✗ (gửi lại JSON) |
+
+### POST /jobs/{job_id}/retry
+Body (tùy chọn, bỏ trống = retry mọi item `failed` / `cancelled`):
+```json
+{
+  "smart_ad_ids": ["1881737028989330"],
+  "video_urls": {"1881737028989330": "https://de-s3.storage.bunnycdn.com/...mp4?X-Amz-...(link mới)"},
+  "reasons": {"1881737028989330": [{"category": "...", "detail": "..."}]},
+  "force": false
+}
+```
+- `video_urls`: link mới cho item `source_expired`. Đổi link thì toàn bộ file tạm của item bị xoá, chạy lại từ đầu.
+- `reasons`: ghi đè reject reasons (kết quả triage/plan/rewrite cũ bị bỏ).
+- `force: true` + `smart_ad_ids`: chạy lại cả item `done` / `no_changes` / `skipped` (bỏ kết quả triage/plan/rewrite, giữ video + transcript).
+- `200 {"retried": [...], "state": "running"}`; `409` nếu không có item nào retry được.
+
+### POST /jobs/{job_id}/cancel
+Body tùy chọn `{"smart_ad_ids": [...]}`; bỏ trống = huỷ mọi item chưa xong và đánh dấu job `cancelled`.
+- Item đang chờ / chờ retry → `cancelled` ngay.
+- Item đang chạy → `state: "cancelled"`, `stage: "killing"` ngay lập tức; ffmpeg / tải video bị kill ngay, bước đang
+  gọi OpenAI hoặc Demucs dừng khi bước đó trả về (thường < vài giây, test thật: ~1.6s từ lúc gọi tới lúc giải phóng slot).
+- Trả `{"cancelled": ["smart_ad_id", ...], "state": "..."}`. Item bị huỷ có thể chạy lại bằng `/retry`.
+
+### GET /jobs/{job_id}/events
+```json
+{"events": [
+  {"id": 41, "ts": 1795575765.1, "smart_ad_id": null, "kind": "submitted", "message": "1 item cần xử lý / 1", "data": null},
+  {"id": 42, "ts": 1795575765.2, "smart_ad_id": "1881737028989330", "kind": "attempt", "message": "lần chạy thứ 1"},
+  {"id": 43, "ts": 1795575786.0, "smart_ad_id": "1881737028989330", "kind": "retry_scheduled", "message": "[network] ...", "data": {"delay": 5.4, "attempt": 1}},
+  {"id": 44, "ts": 1795575810.3, "smart_ad_id": "1881737028989330", "kind": "done", "message": "", "data": {"seconds": 24.1}}
+]}
+```
+`kind`: `submitted`, `attempt`, `retry_scheduled`, `resumed` (chạy tiếp sau restart), `kill`, `retry_requested`,
+`done` / `no_changes` / `failed` / `cancelled`, `job_done` / `job_cancelled`, `tiktok_error`.
+
+### GET /jobs
+`?state=running&limit=50&before=<created_at>` → `{"jobs": [{job_id, state, campaign_name, created_at, finished_at, progress, status_url}], "next_before": ...}`.
+Trang tiếp: truyền `next_before` vào `before`.
 
 ### GET /files/...
 Link trong `output_video_url` có hạn `FILE_URL_TTL_HOURS` (mặc định 7 ngày). Thiếu hoặc sai `exp`/`sig` thì trả `404`.
+Video bị xoá sau `OUTPUT_RETENTION_DAYS` kể từ lúc job xong.
 
-### Mã lỗi
+### Mã lỗi HTTP
 
 | HTTP | Khi nào |
 |---|---|
 | 400 | `video_url` / `callback_url` không hợp lệ: không phải https, ngoài allowlist, trỏ vào IP nội bộ |
 | 401 | Thiếu chữ ký, sai chữ ký, `client_id` lạ, timestamp lệch quá 5 phút, nonce dùng lại |
 | 404 | Job không tồn tại hoặc thuộc client khác; link file sai hoặc hết hạn |
+| 409 | `/retry` không có item nào retry được; `/webhooks/resend` khi job chưa xong hoặc không có `callback_url` |
 | 413 | Body > 2MB hoặc > 50 items |
 | 422 | JSON sai schema |
 | 429 | Vượt rate limit; IP sai xác thực ≥ 10 lần/phút (bị chặn 1 phút); client đang có ≥ 5 job chưa xong |
+| 503 | Ổ đĩa còn dưới `MIN_FREE_GB`: tạm ngừng nhận job (`Retry-After: 300`) |
 
 ---
 
 ## 5. Webhook
 
-Job xong (`done` hoặc `failed`) thì service `POST` toàn bộ object Job (như `GET /jobs/{id}`, bỏ `client_id`) tới `callback_url`.
+Nếu job có `callback_url`, service gửi `POST` cho 2 loại event:
+
+| Event | Khi nào | Body |
+|---|---|---|
+| `item.done` | Mỗi item kết thúc (`done` / `no_changes` / `failed` / `cancelled` / `skipped`). Tắt bằng `WEBHOOK_ITEM_EVENTS=false` | `{"event", "event_id", "job_id", "advertiser_id", "campaign_id", "campaign_name", "progress", "item": {...như 1 item của GET /jobs/{id}}}` |
+| `job.done` | Mọi item đã kết thúc (cả khi bị huỷ) | Object Job như `GET /jobs/{id}` (bỏ `client_id`) + `"event"`, `"event_id"` |
 
 | Header | Giá trị |
 |---|---|
+| `X-Magician-Event` | `item.done` / `job.done` |
+| `X-Magician-Event-Id` | ID duy nhất của event, **giữ nguyên qua các lần gửi lại** → dùng để chống xử lý trùng |
+| `X-Magician-Delivery-Attempt` | Lần gửi thứ mấy (1, 2, ...) |
 | `X-Magician-Timestamp` | Unix time lúc gửi |
 | `X-Magician-Signature` | `sha256=` + hex `HMAC_SHA256(CALLBACK_SECRET, timestamp + "." + raw_body)` |
 
-- Retry 3 lần (chờ 5s, 10s) nếu không nhận được 2xx. Kết quả lần gửi cuối ghi vào `callback_status`.
+- **Retry:** không nhận được 2xx thì gửi lại sau 10s, 30s, 2m, 5m, 15m, 30m (`WEBHOOK_RETRY_DELAYS`), tổng 7 lần trong ~53 phút.
+  Hàng đợi webhook lưu trong SQLite nên server restart vẫn gửi tiếp.
+- **Thứ tự:** event của cùng 1 job gửi tuần tự đúng thứ tự xảy ra; `job.done` luôn tới sau mọi `item.done`, kể cả khi
+  `item.done` phải gửi lại nhiều lần. Event bị bỏ (hết lượt) không chặn event sau.
+- **Theo dõi:** `GET /jobs/{id}/webhooks` (trạng thái từng event), `callback_status` của job phản ánh `job.done`.
+  Gửi lại thủ công: `POST /jobs/{id}/webhooks/resend`.
 - Không follow redirect. `callback_url` được kiểm tra SSRF lại lúc gửi.
+- Gọi `/retry` làm job chạy lại → khi xong có `job.done` mới (event_id mới).
 
-Phía nhận phải verify bằng **raw body** (không parse JSON rồi stringify lại) và từ chối nếu timestamp lệch quá 5 phút:
+Phía nhận phải verify bằng **raw body** (không parse JSON rồi stringify lại), từ chối nếu timestamp lệch quá 5 phút,
+trả 2xx nhanh (xử lý nặng thì đẩy vào queue riêng) và bỏ qua `event_id` đã xử lý:
 
 ```python
 from magician_client import verify_webhook
@@ -357,7 +473,7 @@ Khuyến nghị thêm ở phía Cloudflare: WAF rule chỉ cho IP của dashboar
 | `OMNIVOICE_PYTHON` / `XTTS_PYTHON` | trống | Python chạy worker TTS; trống = cùng Python với server. XTTS bắt buộc env riêng |
 | `TTS_WORKERS` | `0` (tự tính) | Số worker clone giọng |
 | `MAX_TTS_PER_GPU` | `4` | |
-| `ITEM_CONCURRENCY` | `0` (tự tính) | Số video xử lý song song trong 1 job |
+| `ITEM_CONCURRENCY` | `0` (tự tính) | Số item xử lý song song trên toàn server |
 | `MAX_TEMPO` | `1.3` | Tốc độ đọc tối đa để vừa khung thời gian cũ |
 | `VISION_MODEL` | `gpt-6-luna` | Model đọc frame, triage + lập kế hoạch sửa (phải nhận ảnh) |
 | `OCR_FPS` / `PLANNER_FPS` / `MAX_PLANNER_FRAMES` | `2` / `1` / `60` | Mật độ frame cho OCR và cho planner |
@@ -365,7 +481,20 @@ Khuyến nghị thêm ở phía Cloudflare: WAF rule chỉ cho IP của dashboar
 | `VIDEO_CRF` | `18` | Chất lượng encode lại (thấp = đẹp hơn, file nặng hơn) |
 | `MODELS_DIR` | `DATA_DIR/models` | Nơi lưu model EasyOCR + LaMa (tự tải lần đầu) |
 | `COQUI_TOS_AGREED` | | Chỉ cho XTTS: đặt `1` để xác nhận license CPML |
-| `DATA_DIR` | `./data` | `jobs/` (file tạm + `job.json`), `outputs/` (video kết quả) |
+| `DATA_DIR` | `./data` | `magician.db`, `jobs/` (file trung gian), `outputs/` (video kết quả), `logs/` |
+| `DB_PATH` | `DATA_DIR/magician.db` | SQLite |
+| `STAGE_TIMEOUTS` | `download:180,separate:240,transcribe:240,triage:180,ocr:300,plan:240,rewrite:180,tts:240,render:900,mux:180` | Giây tối đa mỗi bước |
+| `TTS_CALL_TIMEOUT` | `120` | Giây tối đa 1 lần gọi worker TTS, quá thì kill worker |
+| `DOWNLOAD_CONNECT_TIMEOUT` | `30` | Giây chờ kết nối khi tải video |
+| `MIN_FREE_GB` | `5` | Dưới mức này thì ngừng nhận / chạy job |
+| `WORK_RETENTION_HOURS` / `OUTPUT_RETENTION_DAYS` / `JOB_RETENTION_DAYS` | `24` / `7` / `30` | Dọn file trung gian / video kết quả / bản ghi |
+| `WEBHOOK_ITEM_EVENTS` | `true` | Gửi `item.done` mỗi item |
+| `WEBHOOK_RETRY_DELAYS` | `10,30,120,300,900,1800` | Giây chờ giữa các lần gửi lại webhook |
+| `WEBHOOK_TIMEOUT` | `20` | Giây chờ phía nhận trả lời |
+| `DEDUP_ACTIVE` | `true` | Gửi trùng ad đang chạy thì trả job cũ |
+| `OOM_COOLDOWN_MINUTES` | `10` | Thời gian giảm concurrency sau CUDA OOM |
+| `LOG_DIR` / `LOG_MAX_MB` / `LOG_BACKUPS` | `DATA_DIR/logs` / `50` / `10` | Log file xoay vòng |
+| `TTS_WARMUP` | `true` | Khởi động worker TTS lúc start (tắt khi chạy test) |
 
 ---
 
@@ -407,20 +536,68 @@ nhận về). Số liệu thực tế của từng item nằm trong `usage`.
 
 ## 9. Vận hành
 
-### Cloudflare Tunnel (Windows, máy hiện tại)
+### Chạy thường trực trên Windows (Task Scheduler)
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\service.ps1 install    # tạo + start 2 task
+powershell -ExecutionPolicy Bypass -File scripts\service.ps1 status     # trạng thái task + /ready
+powershell -ExecutionPolicy Bypass -File scripts\service.ps1 restart    # sau khi sửa code / .env
+powershell -ExecutionPolicy Bypass -File scripts\service.ps1 stop|start|logs|uninstall [-Only api|tunnel]
+```
+- 2 task: `Magician-API` (uvicorn `127.0.0.1:8000`) và `Magician-Tunnel` (cloudflared, config `magician.yml`).
+  Chạy khi user đăng nhập, không giới hạn thời gian.
+- Mỗi task chạy `scripts\run_service.ps1` làm supervisor: process chết thì 5s sau tự bật lại (test: kill uvicorn → chạy lại,
+  `/ready` 200 sau ~30s). Supervisor chết thì Task Scheduler chạy lại (tối đa 999 lần, cách 1 phút).
+- Biến môi trường của supervisor (tùy chọn): `MAGICIAN_PYTHON` (mặc định `D:\envs\omnivoice\python.exe`),
+  `MAGICIAN_CLOUDFLARED`, `MAGICIAN_TUNNEL_CONFIG`, `HF_HOME` (mặc định `D:\cache\hf`), `MAGICIAN_TEMP` (`D:\cache\tmp`).
+- Task chạy theo phiên đăng nhập: máy reboot thì phải đăng nhập Windows thì service mới lên (muốn chạy không cần
+  đăng nhập phải dùng tài khoản có mật khẩu + quyền admin, hoặc NSSM).
+
+### Cloudflare Tunnel
 - Tunnel `magician` → `http://localhost:8000`, config riêng `C:\Users\Qhuy\.cloudflared\magician.yml`.
-- Chạy: `"C:\Program Files (x86)\cloudflared\cloudflared.exe" --config C:\Users\Qhuy\.cloudflared\magician.yml tunnel run`
 - **Không** dùng `config.yml` mặc định (của tunnel `hoanganh`). Mọi lệnh `cloudflared tunnel ...` cho magician phải kèm
   `--config ...magician.yml`, nếu không DNS sẽ bị trỏ nhầm.
 
-### Dữ liệu
-- `data/jobs/<job_id>/job.json` – trạng thái job, được nạp lại khi restart.
-- `data/jobs/<job_id>/<smart_ad_id>/` – file tạm (audio tách, TTS). Có thể xóa sau khi job xong.
-- `data/outputs/<job_id>/<smart_ad_id>.mp4` – video kết quả.
-- Service chưa có cơ chế tự dọn; cần cron xóa thư mục cũ hơn `FILE_URL_TTL_HOURS`.
+### Log
+| File | Nội dung |
+|---|---|
+| `data/logs/magician.log` | Log app + access log, xoay vòng `LOG_MAX_MB` × `LOG_BACKUPS`. Mỗi dòng có `[job_id(8)/smart_ad_id]` |
+| `data/logs/api.out.log`, `api.err.log` | stdout/stderr của uvicorn (thanh tiến trình load model, crash trước khi logging chạy) |
+| `data/logs/tunnel.err.log` | Log cloudflared |
+| `data/logs/supervisor.log` | Thời điểm start / exit / restart của từng process |
 
-### Restart
-Job đang chạy lúc restart bị đánh dấu `failed` (`callback_status: "interrupted by server restart"`); gửi lại JSON để chạy lại.
+Timeline của 1 job (mỗi lần chạy, retry, lỗi): `GET /jobs/{id}/events`.
+
+### Giám sát
+- `GET /ready` (public): dùng cho uptime monitor. `503` khi thiếu DB, ffmpeg, scheduler chết, không có worker TTS
+  (trong lúc khởi động ~30s cũng là 503) hoặc ổ đĩa dưới `MIN_FREE_GB`.
+- `GET /status` (ký): `ready` từng check, `scheduler` (`concurrency`, `running`, `pending`, `retrying`, `active_jobs`,
+  `errors_last_hour` theo `error_code`, `webhooks` theo trạng thái, `disk_free_gb`, `paused`), phần cứng, worker TTS.
+- `GET /metrics` (Prometheus; không cần ký nếu gọi từ chính máy chủ, qua tunnel phải ký):
+  `magician_items_running/pending/retrying`, `magician_items_finished_total{state}`, `magician_item_errors_total{code}`,
+  `magician_stage_seconds_sum/count{stage}`, `magician_webhooks{state}`, `magician_tts_workers_alive`, `magician_disk_free_gb`...
+
+### Watchdog & tự bảo vệ
+- **Timeout từng bước** (`STAGE_TIMEOUTS`): quá giờ thì kill subprocess của bước đó, item `stage_timeout` → retry.
+- **Worker TTS**: mỗi lần gọi có timeout `TTS_CALL_TIMEOUT`; worker treo bị kill. Watchdog 30s/lần bỏ worker chết và spawn lại.
+- **CUDA OOM**: item retry, đồng thời số item chạy song song giảm một nửa trong `OOM_COOLDOWN_MINUTES`.
+- **Hết đĩa**: còn dưới `MIN_FREE_GB` thì ngừng lấy item mới, `POST /jobs` trả `503`, `/ready` 503; đủ đĩa thì tự chạy lại.
+- **Scheduler**: hàng đợi cấp item, tối đa `item_concurrency` item cùng lúc trên toàn server; xoay vòng giữa các client
+  (client gửi 50 item không chặn client khác), trong 1 client thì FIFO theo job.
+
+### Dữ liệu & dọn dẹp
+- `data/magician.db` (SQLite, WAL): job + request gốc, event log, hàng đợi webhook. Backup: copy file khi service dừng,
+  hoặc `sqlite3 data/magician.db ".backup backup.db"` khi đang chạy.
+- `data/jobs/<job_id>/<smart_ad_id>/`: file trung gian (video gốc, stem, transcript, plan, TTS) để retry / resume.
+  Tự xoá sau `WORK_RETENTION_HOURS` (24h) kể từ lúc job xong.
+- `data/outputs/<job_id>/<smart_ad_id>.mp4`: video kết quả, tự xoá sau `OUTPUT_RETENTION_DAYS` (7 ngày, khớp hạn link).
+- Bản ghi job / event / webhook xoá sau `JOB_RETENTION_DAYS` (30 ngày). Dọn dẹp chạy lúc start rồi mỗi giờ.
+- `data/jobs/*/job.json` của bản cũ được import vào SQLite 1 lần lúc start.
+
+### Restart / crash
+- Job / item đang chạy khi server tắt hoặc crash được **chạy tiếp** khi start lại (event `resumed`), từ bước đã lưu
+  (test thật: kill giữa bước OCR → sau restart download / separate / transcribe / triage được dùng lại, chỉ chạy tiếp từ plan).
+- Webhook chưa gửi xong được gửi tiếp.
+- Nonce chống replay và rate limit nằm trong RAM nên reset khi restart (chữ ký vẫn chỉ hợp lệ trong 5 phút).
 
 ---
 
@@ -438,4 +615,7 @@ Job đang chạy lúc restart bị đánh dấu `failed` (`callback_status: "int
 - **Link video:** link Bunny/TikTok trong JSON hết hạn sau khoảng 1 giờ, phải gửi job ngay sau khi lấy JSON.
 - **Kết quả rewrite:** không cố định giữa các lần chạy; cùng một video có lần model sửa, có lần từ chối.
 - **Giọng clone:** chất lượng phụ thuộc giọng gốc sau khi tách nhạc nền; nên nghe lại trước khi dùng.
-- **Trạng thái lưu trong 1 process:** rate limit, nonce và hàng đợi nằm trong RAM của 1 instance; chạy nhiều instance cần chuyển sang Redis.
+- **1 instance:** job / hàng đợi / webhook lưu SQLite (bền qua restart) nhưng chỉ 1 process được đọc ghi; rate limit và
+  nonce nằm trong RAM. Chạy nhiều máy GPU dùng chung hàng đợi cần chuyển sang Postgres + Redis.
+- **Kill item đang chạy:** ffmpeg và bước tải video dừng ngay; bước đang gọi OpenAI hoặc Demucs phải chờ bước đó trả về
+  (OpenAI có timeout 180s) mới giải phóng slot, dù trạng thái item đã là `cancelled`.

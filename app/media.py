@@ -4,21 +4,26 @@ from pathlib import Path
 
 import httpx
 
+from . import runctx
+from .errors import InvalidInput, NetworkError, SourceExpired
+
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36"
 
 
 def run(*args: str) -> str:
-    proc = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args], capture_output=True, text=True)
+    proc = runctx.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args], capture_output=True, text=True,
+                      encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {proc.stderr.strip()[-800:]}")
     return proc.stdout
 
 
 def probe(path: Path) -> dict:
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
-        capture_output=True, text=True, check=True,
-    ).stdout
+    proc = runctx.run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(path)],
+                      capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if proc.returncode != 0:
+        raise InvalidInput(f"file video không đọc được: {proc.stderr.strip()[-300:]}")
+    out = proc.stdout
     return json.loads(out)
 
 
@@ -26,38 +31,48 @@ def has_audio(path: Path) -> bool:
     return any(s.get("codec_type") == "audio" for s in probe(path)["streams"])
 
 
-def download(url: str, dest: Path, attempts: int = 4) -> Path:
-    """Tải video; check SSRF ở mọi hop redirect và giới hạn dung lượng. Retry khi lỗi mạng tạm thời."""
-    import logging
-    import time
+def download(url: str, dest: Path) -> Path:
+    """Tải video (ghi ra .part rồi rename, nên file dở dang không bị dùng lại khi retry).
+    Check SSRF ở mọi hop redirect, giới hạn dung lượng, kill được qua runctx. Retry do scheduler lo."""
     from urllib.parse import urlsplit
 
     from .config import settings
     from .security import check_public_url
 
     limit = settings.max_video_mb * 1024 * 1024
+    host = urlsplit(url).netloc
     hook = lambda req: check_public_url(str(req.url), settings.video_url_allowlist)
-    timeout = httpx.Timeout(120, connect=30)
-    for i in range(attempts):
-        try:
-            with httpx.Client(headers={"User-Agent": UA}, follow_redirects=True, max_redirects=5, timeout=timeout,
-                              event_hooks={"request": [hook]}) as client, client.stream("GET", url) as r:
-                r.raise_for_status()
-                if int(r.headers.get("content-length") or 0) > limit:
-                    raise ValueError(f"video lớn hơn {settings.max_video_mb}MB")
-                size = 0
-                with open(dest, "wb") as f:
-                    for chunk in r.iter_bytes(1 << 16):
-                        size += len(chunk)
-                        if size > limit:
-                            raise ValueError(f"video lớn hơn {settings.max_video_mb}MB")
-                        f.write(chunk)
-            return dest
-        except httpx.TransportError as e:
-            if i == attempts - 1:
-                raise RuntimeError(f"không tải được video từ {urlsplit(url).netloc} sau {attempts} lần: {e}") from e
-            logging.getLogger(__name__).warning("download lỗi (%s), thử lại %d/%d", e, i + 1, attempts - 1)
-            time.sleep(2 * (i + 1))
+    timeout = httpx.Timeout(120, connect=settings.download_connect_timeout)
+    part = dest.with_name(dest.name + ".part")
+    try:
+        with httpx.Client(headers={"User-Agent": UA}, follow_redirects=True, max_redirects=5, timeout=timeout,
+                          event_hooks={"request": [hook]}) as client, client.stream("GET", url) as r:
+            if r.status_code in (401, 403, 404, 410):
+                raise SourceExpired(f"{host} trả HTTP {r.status_code}: link video hết hạn hoặc sai chữ ký, gửi link mới qua /retry")
+            if r.status_code == 429 or r.status_code >= 500:
+                raise NetworkError(f"{host} trả HTTP {r.status_code}")
+            r.raise_for_status()
+            if int(r.headers.get("content-length") or 0) > limit:
+                raise InvalidInput(f"video lớn hơn {settings.max_video_mb}MB")
+            size = 0
+            with open(part, "wb") as f:
+                for chunk in r.iter_bytes(1 << 16):
+                    runctx.check()
+                    size += len(chunk)
+                    if size > limit:
+                        raise InvalidInput(f"video lớn hơn {settings.max_video_mb}MB")
+                    f.write(chunk)
+    except httpx.TransportError as e:
+        part.unlink(missing_ok=True)
+        raise NetworkError(f"không kết nối được {host}: {e.__class__.__name__}: {e}") from e
+    except ValueError as e:  # SSRF check của redirect
+        part.unlink(missing_ok=True)
+        raise InvalidInput(str(e)) from e
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+    part.replace(dest)
+    return dest
 
 
 def extract_audio(video: Path, out: Path, sr: int = 44100, channels: int = 2) -> Path:

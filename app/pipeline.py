@@ -15,7 +15,7 @@ import numpy as np
 import soundfile as sf
 from openai import OpenAI
 
-from . import media, video_edit, vision
+from . import media, runctx, video_edit, vision
 from .config import settings
 from .rewrite import plan_edits, shorten
 from .planner import plan_fix, triage
@@ -76,11 +76,41 @@ def _openai_client(usage: dict[str, float]) -> OpenAI:
 
 @contextmanager
 def _timed(timings: dict[str, float], stage: str):
+    """Đo thời gian + báo stage hiện tại / áp timeout của stage qua runctx."""
     t = time.perf_counter()
     try:
-        yield
+        with runctx.stage(stage):
+            yield
     finally:
         timings[stage] = round(timings.get(stage, 0) + time.perf_counter() - t, 2)
+
+
+def _persisted(path: Path, compute):
+    """Kết quả JSON của 1 bước (gọi OpenAI) được lưu ra work dir; retry item thì đọc lại, không gọi lại API."""
+    if path.exists():
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            path.unlink(missing_ok=True)
+    value = compute()
+    tmp = path.with_name(path.name + ".part")
+    tmp.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+    return value
+
+
+def _separate_cached(mix_wav: Path, work: Path) -> tuple[np.ndarray, np.ndarray, int]:
+    vp, bp = work / "vocals.wav", work / "bgm.wav"
+    if vp.exists() and bp.exists():
+        vocals, sr = sf.read(vp, dtype="float32", always_2d=True)
+        bgm, _ = sf.read(bp, dtype="float32", always_2d=True)
+        return vocals, bgm, sr
+    vocals, bgm, sr = separate(mix_wav)
+    for arr, path in ((bgm, bp), (vocals, vp)):
+        tmp = path.with_name(path.stem + ".part.wav")
+        sf.write(tmp, arr, sr, subtype="FLOAT")
+        tmp.replace(path)
+    return vocals, bgm, sr
 
 
 def _fade_mute(track: np.ndarray, s: int, e: int, fade: int) -> None:
@@ -236,7 +266,8 @@ def _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cac
     new_vocals = vocals.copy()
     with timed("rewrite"):
         script_key = _digest(json.dumps([language, reason_lines, [x["text"] for x in segments]], ensure_ascii=False))
-        audio_plan = cache.get(("rewrite", script_key), lambda: plan_edits(client, segments, language, reason_lines, hint))
+        audio_plan = cache.get(("rewrite", script_key), lambda: _persisted(
+            work / "rewrite.json", lambda: plan_edits(client, segments, language, reason_lines, hint)))
     if not audio_plan["edits"]:
         return new_vocals
     by_id = {s["id"]: s for s in segments}
@@ -282,7 +313,9 @@ def process_item(
         raise ValueError("thiếu video_url")
 
     with timed("download"):
-        video = media.download(item.video_url, work / "source.mp4")
+        video = work / "source.mp4"
+        if not video.exists():
+            media.download(item.video_url, video)
         video_key = _digest(video.read_bytes())
     info = vision.video_info(video)
     has_audio = media.has_audio(video)
@@ -293,12 +326,14 @@ def process_item(
         with timed("separate"):
             mix_wav = media.extract_audio(video, work / "mix.wav")
             audio_key = _digest(mix_wav.read_bytes())
-            vocals, bgm, sr = cache.get(("separate", audio_key), lambda: separate(mix_wav))
+            vocals, bgm, sr = cache.get(("separate", audio_key), lambda: _separate_cached(mix_wav, work))
         vocals_path = work / "vocals.wav"
-        sf.write(vocals_path, vocals, sr)
+        if not vocals_path.exists():  # item trùng audio lấy stem từ cache của item khác
+            sf.write(vocals_path, vocals, sr, subtype="FLOAT")
         with timed("transcribe"):
-            tr = cache.get(("transcribe", audio_key),
-                           lambda: transcribe(client, media.to_mono_16k(vocals_path, work / "vocals_16k.wav")))
+            tr = cache.get(("transcribe", audio_key), lambda: _persisted(
+                work / "transcript.json",
+                lambda: transcribe(client, media.to_mono_16k(vocals_path, work / "vocals_16k.wav"))))
         segments, language = tr["segments"], tr["language"]
         result.language = language
 
@@ -307,30 +342,45 @@ def process_item(
     violation_images = _download_images([u for r in reasons for u in r.violation_frames] + item.violation_frames, work)
     hint = " | ".join(x for x in (campaign, item.smart_ad_name, Path(urlparse(item.video_url).path).name) if x)
     stop_ocr = threading.Event()
+    if ctx := runctx.current():
+        ctx.on_kill(stop_ocr.set)
+    tracks_file = work / "tracks.pkl"
 
     def run_ocr():
+        import pickle
+
+        if tracks_file.exists():
+            return pickle.loads(tracks_file.read_bytes())
         t0 = time.perf_counter()
         tracks = vision.ocr_tracks(vision.sample_frames(video, settings.ocr_fps, 960), language or "en", settings.ocr_fps, stop_ocr)
         result.timings["ocr"] = round(time.perf_counter() - t0, 2)
+        if not stop_ocr.is_set():
+            tracks_file.write_bytes(pickle.dumps(tracks))
         return tracks
 
     with ThreadPoolExecutor(1) as bg:
         ocr_future = bg.submit(lambda: cache.get(("ocr", video_key), run_ocr))
         with timed("triage"):
-            quick = cache.get(("triage", video_key, tuple(result.reject_reasons)), lambda: triage(
-                client, reasons, segments, planner_frames, violation_images, hint))
+            quick = cache.get(("triage", video_key, tuple(result.reject_reasons)), lambda: _persisted(
+                work / "triage.json", lambda: triage(client, reasons, segments, planner_frames, violation_images, hint)))
         if quick["decision"] == "unfixable":
             stop_ocr.set()
             result.plan = {"decision": "unfixable", "reason": quick["reason"], "stage": "triage"}
             result.state, result.error = "no_changes", quick["reason"] or "không sửa được bằng cách chỉnh video"
             return
-        tracks = ocr_future.result()
+        with runctx.stage("ocr"):
+            while True:
+                try:
+                    tracks = ocr_future.result(timeout=1)
+                    break
+                except TimeoutError:
+                    runctx.check()
     track_map = {t.id: t for t in tracks}
 
     with timed("plan"):
         plan_key = _digest(json.dumps([video_key, [r.model_dump() for r in reasons]], ensure_ascii=False))
-        plan = cache.get(("plan", plan_key), lambda: plan_fix(
-            client, reasons, info.duration, segments, language, tracks, planner_frames, violation_images, hint))
+        plan = cache.get(("plan", plan_key), lambda: _persisted(work / "plan_raw.json", lambda: plan_fix(
+            client, reasons, info.duration, segments, language, tracks, planner_frames, violation_images, hint)))
     result.plan = plan
     (work / "plan.json").write_text(json.dumps({"plan": plan, "tracks": [t.public() for t in tracks]},
                                                ensure_ascii=False, indent=1), encoding="utf-8")

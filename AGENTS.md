@@ -43,23 +43,50 @@ tuỳ chọn XTTS-v2; mẫu từ chính vocal stem) → OmniVoice `duration` / a
 - `pip install easyocr` kéo torch PyPI ghi đè bản CUDA → luôn cài lại torch/torchvision từ index cu128 sau đó.
 - Test: `data/test/visual/run_item.py <ad.json> <video.mp4> <tag>` (ad_synth*.json + synthetic*.mp4 tự tạo; ad_arabic3.json = TopDrama → unfixable).
 
+## Backend: queue / retry / cancel (`app/jobs.py`, `app/store.py`, `app/errors.py`, `app/runctx.py`)
+- State trong RAM, ghi xuống SQLite `data/magician.db` (jobs + request gốc, events, webhook outbox) mỗi lần đổi.
+  Start lại: item `running` → `pending` (event `resumed`), webhook pending gửi tiếp. `data/jobs/*/job.json` cũ import 1 lần.
+- Scheduler cấp item, toàn server tối đa `item_concurrency`, xoay vòng theo client. Item chạy trong thread (`asyncio.to_thread`)
+  với `RunContext` (contextvar): stage hiện tại, timeout từng stage (`STAGE_TIMEOUTS`), kill. Subprocess phải chạy qua
+  `runctx.run` / `runctx.tracked` để kill được; vòng lặp dài gọi `runctx.check()`. Thread con (ThreadPoolExecutor) KHÔNG
+  thừa kế contextvar.
+- Pipeline lưu kết quả từng bước vào work dir (`source.mp4`, `vocals.wav`/`bgm.wav`, `transcript.json`, `tracks.pkl`,
+  `triage.json`, `plan_raw.json`, `rewrite.json`, `tts_*.wav`; ghi `.part` rồi rename) → retry/resume không gọi lại OpenAI.
+  Pipeline chạy trên bản copy `ItemResult`, `jobs.py` copy `RESULT_FIELDS` về khi xong.
+- `errors.classify` → `error_code` + `POLICIES` (số lần + delay). `source_expired` không tự retry, cần `/retry` + `video_urls`.
+- Webhook outbox: `item.done` + `job.done`, cùng job gửi tuần tự theo rowid, retry `WEBHOOK_RETRY_DELAYS`.
+- Dedup: cùng client + smart_ad_id + video + reasons với item chưa xong → trả job cũ; `Idempotency-Key` header.
+- Cleanup mỗi giờ (`WORK_RETENTION_HOURS`, `OUTPUT_RETENTION_DAYS`, `JOB_RETENTION_DAYS`); ổ < `MIN_FREE_GB` → pause + 503.
+
 ## Lệnh
-- Chạy server: `HF_HOME=D:/cache/hf D:/envs/omnivoice/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers`
+- Service (Task Scheduler, supervisor `scripts/run_service.ps1` tự restart sau 5s):
+  `powershell -ExecutionPolicy Bypass -File scripts/service.ps1 install|status|restart|stop|start|logs|uninstall [-Only api|tunnel]`.
+  Đã cài trên máy này (task `Magician-API`, `Magician-Tunnel`, chạy khi user đăng nhập). Sửa code xong: `service.ps1 restart -Only api`.
+- Chạy tay: `HF_HOME=D:/cache/hf D:/envs/omnivoice/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers`
+  (dừng task api trước, không thì trùng port).
 - Kiểm tra compile: `D:/envs/omnivoice/python.exe -m compileall -q app`
+- Test backend (pipeline giả, không GPU/OpenAI, ~20s): `D:/envs/omnivoice/python.exe -m pytest tests -q`
+- E2E pipeline thật trên instance test port 8010: xem docstring `tests/e2e_real.py` (full / cancel / expired / resume).
+  Máy này chỉ đủ commit RAM cho 1 worker OmniVoice → phải dừng service api trước khi chạy instance test.
+- Log: `data/logs/magician.log` (có `[job/ad]`), `api.err.log`, `tunnel.err.log`, `supervisor.log`.
+- Git: https://github.com/Qhuy204/Magician.git (`data/`, `.env` bị ignore).
+- Shell heredoc dài (>~150 dòng) bị cắt → ghi script ra file bằng tool write rồi chạy.
 
 ## API
-- `POST /jobs?callback_url=...` body = JSON `historical_reviews` (+ optional `callback_url`, `process_statuses`,
-  `items[].reject_reasons`). Trả 202 + `job_id`.
-- `GET /jobs/{job_id}`: trạng thái từng item, edits, `output_video_url`.
-- `GET /files/{job_id}/{smart_ad_id}.mp4`: video kết quả.
-- Webhook: POST JSON `Job` về `callback_url`, header `X-Magician-Signature` = HMAC-SHA256(body, CALLBACK_SECRET).
+- `POST /jobs?callback_url=...` (+ header `Idempotency-Key`) body = JSON review (format cũ `items` hoặc mới `ads`). 202 + `job_id`.
+- `GET /jobs`, `GET /jobs/{id}` (progress, queue_position, item stage/attempt/error_code/retryable/next_retry_at),
+  `GET /jobs/{id}/events`, `POST /jobs/{id}/retry`, `POST /jobs/{id}/cancel` (kill), `GET /jobs/{id}/webhooks`,
+  `POST /jobs/{id}/webhooks/resend`, `GET /ready` (public), `GET /status`, `GET /metrics` (localhost không cần ký).
+- `GET /files/{job_id}/{smart_ad_id}.mp4?exp=&sig=`: video kết quả.
+- Webhook: `item.done` / `job.done`, headers `X-Magician-Event`, `X-Magician-Event-Id`, `X-Magician-Signature` =
+  `sha256=HMAC(CALLBACK_SECRET, "{ts}.{body}")`. Spec đầy đủ: README mục 4–5.
 
 ## Public (Cloudflare Tunnel)
 - Domain: https://magician.qhuy204.id.vn → tunnel `magician` (id 66ed9ef9-1d4e-420d-8f9d-054d79d43336) → http://localhost:8000
 - Config riêng: `C:\Users\Qhuy\.cloudflared\magician.yml` (KHÔNG dùng `config.yml` mặc định, file đó của tunnel `hoanganh`;
   lệnh `tunnel route dns` không có `--config` sẽ trỏ nhầm DNS sang tunnel đó).
-- Chạy: `"C:\Program Files (x86)\cloudflared\cloudflared.exe" --config C:\Users\Qhuy\.cloudflared\magician.yml tunnel run`
-- Server bind 127.0.0.1. Tunnel + server chạy trong phiên agent, chưa cài service (tunnel từng tự chết → 530).
+- Chạy tay: `"C:\Program Files (x86)\cloudflared\cloudflared.exe" --config C:\Users\Qhuy\.cloudflared\magician.yml tunnel run`
+- Server bind 127.0.0.1. Tunnel + server chạy bằng Task Scheduler (xem Lệnh).
 
 ## Bảo mật (`app/security.py`, middleware trong `app/main.py`)
 - Client: `API_KEYS=client_id:secret,...`. Mặc định bắt buộc ký HMAC: headers X-Client-Id/X-Timestamp/X-Nonce/X-Signature,

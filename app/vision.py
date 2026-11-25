@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
+from . import runctx
 from .config import settings
 from .hardware import detect
 
@@ -51,7 +52,7 @@ class TextTrack:
 
 
 def video_info(path: Path) -> VideoInfo:
-    out = subprocess.run(
+    out = runctx.run(
         ["ffprobe", "-v", "error", "-select_streams", "v:0", "-count_packets", "-show_entries",
          "stream=width,height,avg_frame_rate,nb_read_packets:format=duration", "-of", "json", str(path)],
         capture_output=True, text=True, check=True,
@@ -68,7 +69,7 @@ def sample_frames(path: Path, fps: float, max_side: int) -> list[tuple[float, np
     info = video_info(path)
     scale = min(1.0, max_side / max(info.width, info.height))
     w, h = int(info.width * scale) // 2 * 2, int(info.height * scale) // 2 * 2
-    raw = subprocess.run(
+    raw = runctx.run(
         ["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"fps={fps},scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
         capture_output=True, check=True,
     ).stdout
@@ -165,7 +166,7 @@ def jpeg_data_url(img: np.ndarray, quality: int = 70) -> str:
 def frame_at(path: Path, t: float) -> np.ndarray:
     """1 frame RGB độ phân giải gốc tại thời điểm t."""
     info = video_info(path)
-    raw = subprocess.run(
+    raw = runctx.run(
         ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(path), "-frames:v", "1",
          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True,
     ).stdout

@@ -1,4 +1,5 @@
 import re
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -104,7 +105,9 @@ class JobRequest(BaseModel):
     process_statuses: list[str] = Field(default_factory=lambda: ["UNAVAILABLE", "PART_AVAILABLE"])
 
 
-ItemState = Literal["pending", "running", "done", "no_changes", "skipped", "failed"]
+# pending = đang chờ trong hàng đợi; retrying = lỗi tạm thời, chờ tới next_retry_at để chạy lại
+ItemState = Literal["pending", "running", "retrying", "done", "no_changes", "skipped", "failed", "cancelled"]
+TERMINAL_ITEM_STATES = {"done", "no_changes", "skipped", "failed", "cancelled"}
 
 
 class Edit(BaseModel):
@@ -135,12 +138,22 @@ class ItemResult(BaseModel):
     plan: dict[str, Any] = {}
     # Các thao tác trên hình đã áp dụng (replace_text / remove_text / remove_region / cut)
     visual_edits: list[dict[str, Any]] = []
+    # --- vận hành ---
+    stage: str | None = None
+    attempt: int = 0
+    error_code: str | None = None
+    retryable: bool | None = None
+    next_retry_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    # item trùng với item đang chạy ở job khác (cùng ad + video + reasons)
+    duplicate_of: str | None = None
 
 
 class Job(BaseModel):
     job_id: str
     client_id: str = "anonymous"
-    state: Literal["queued", "running", "done", "failed"] = "queued"
+    state: Literal["queued", "running", "done", "failed", "cancelled"] = "queued"
     advertiser_id: str
     campaign_id: str | None = None
     campaign_name: str | None = None
@@ -148,3 +161,28 @@ class Job(BaseModel):
     items: list[ItemResult] = []
     callback_status: str | None = None
     cache_hits: dict[str, int] = {}
+    created_at: datetime | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    # Tính lúc trả response: {"total", "finished", "done", "no_changes", "failed", ...}
+    progress: dict[str, int] = {}
+    # Số item của job khác đang xếp trước item đầu tiên còn chờ của job này (None = không còn item chờ)
+    queue_position: int | None = None
+
+
+class RetryRequest(BaseModel):
+    """Body của POST /jobs/{id}/retry. Mặc định retry mọi item failed / cancelled."""
+
+    smart_ad_ids: list[str] | None = None
+    # Link video mới cho item bị source_expired: {smart_ad_id: url}
+    video_urls: dict[str, str] = {}
+    # Ghi đè reject reasons: {smart_ad_id: [reason, ...]}
+    reasons: dict[str, list[ReviewReason]] = {}
+    # Cho phép chạy lại cả item no_changes / done (khi chỉ định smart_ad_ids)
+    force: bool = False
+
+
+class CancelRequest(BaseModel):
+    """Body của POST /jobs/{id}/cancel. Trống = huỷ toàn bộ item chưa xong của job."""
+
+    smart_ad_ids: list[str] | None = None
