@@ -1,0 +1,21 @@
+# Env chính: server + Demucs + OmniVoice + OCR/inpaint. torch/torchaudio 2.8.0 + torchvision 0.23.0 cài riêng theo GPU (xem Dockerfile / README):
+#   NVIDIA: --index-url https://download.pytorch.org/whl/cu128
+#   AMD:    --index-url https://download.pytorch.org/whl/rocm6.4
+#   CPU:    --index-url https://download.pytorch.org/whl/cpu
+#   Mac:    pip install torch==2.8.0 torchaudio==2.8.0 torchvision==0.23.0 (PyPI, có sẵn MPS)
+# Phải cài torch trước: easyocr kéo torchvision mới nhất từ PyPI sẽ ghi đè torch bản CUDA
+fastapi==0.165.0
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+openai==3.58.0
+pydantic-settings==2.16.3
+psutil==7.2.2
+numpy==2.4.6
+soundfile==0.14.0
+demucs==4.0.1
+omnivoice==0.2.1
+transformers==5.24.0
+accelerate==1.16.0
+easyocr==1.7.2
+opencv-python-headless==5.1.0.95
+pillow==13.0.0

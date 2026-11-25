@@ -1,0 +1,7 @@
+# Env riêng cho worker XTTS-v2 (TTS_ENGINE=xtts, XTTS_PYTHON trỏ vào python của env này).
+# Không cài chung env chính: coqui-tts cần transformers<5, OmniVoice cần transformers>=5.3.
+# torch/torchaudio 2.5.1: --index-url https://download.pytorch.org/whl/cu121 (hoặc rocm6.2 / cpu)
+coqui-tts==0.28.0
+transformers==4.57.6
+soundfile==0.14.0
+six==1.17.0

@@ -1,0 +1,56 @@
+# Chọn 1 profile theo GPU của máy:
+#   docker compose --profile nvidia up -d --build
+#   docker compose --profile amd up -d --build
+#   docker compose --profile cpu up -d --build
+x-base: &base
+  env_file: .env
+  environment:
+    DATA_DIR: /app/data
+  ports:
+    - "8000:8000"
+  volumes:
+    - models:/models
+    - ./data:/app/data
+  # XTTS worker là process riêng, giao tiếp qua shared memory
+  shm_size: 2gb
+  restart: unless-stopped
+
+services:
+  magician-nvidia:
+    <<: *base
+    profiles: [nvidia]
+    build: { context: ., args: { TORCH_VARIANT: cu128, XTTS_TORCH_VARIANT: cu121 } }
+    image: magician:cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  magician-amd:
+    <<: *base
+    profiles: [amd]
+    build: { context: ., args: { TORCH_VARIANT: rocm6.4, XTTS_TORCH_VARIANT: rocm6.2 } }
+    image: magician:rocm
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    group_add:
+      - video
+      - render
+    security_opt:
+      - seccomp=unconfined
+    # GPU consumer chưa nằm trong danh sách ROCm hỗ trợ chính thức (vd RX 6700 XT) cần ép gfx version, vd 10.3.0
+    # environment:
+    #   HSA_OVERRIDE_GFX_VERSION: "10.3.0"
+
+  magician-cpu:
+    <<: *base
+    profiles: [cpu]
+    build: { context: ., args: { TORCH_VARIANT: cpu, XTTS_TORCH_VARIANT: cpu } }
+    image: magician:cpu
+
+volumes:
+  models:

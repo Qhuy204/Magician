@@ -1,0 +1,374 @@
+import hashlib
+import json
+import logging
+import re
+import threading
+import time
+import unicodedata
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
+from pathlib import Path
+from urllib.parse import urlparse
+
+import httpx
+import numpy as np
+import soundfile as sf
+from openai import OpenAI
+
+from . import media, video_edit, vision
+from .config import settings
+from .rewrite import plan_edits, shorten
+from .planner import plan_fix, triage
+from .schemas import AdItem, Edit, ItemResult, ReviewReason
+from .separation import separate
+from .transcribe import transcribe
+from .tts import REF_SECONDS, engine, supports_duration, synthesize
+
+log = logging.getLogger(__name__)
+
+FADE = 0.02
+
+
+class JobCache:
+    """Cache dùng chung giữa các item trong 1 job: video trùng audio/lời thoại thì chỉ xử lý 1 lần."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._key_locks: dict = {}
+        self._values: dict = {}
+        self.hits: dict[str, int] = {}
+
+    def get(self, key: tuple, compute):
+        with self._lock:
+            key_lock = self._key_locks.setdefault(key, threading.Lock())
+        with key_lock:
+            if key in self._values:
+                with self._lock:
+                    self.hits[key[0]] = self.hits.get(key[0], 0) + 1
+                return self._values[key]
+            value = self._values[key] = compute()
+            return value
+
+
+def _digest(data: bytes | str) -> str:
+    return hashlib.sha256(data.encode() if isinstance(data, str) else data).hexdigest()
+
+
+def _openai_client(usage: dict[str, float]) -> OpenAI:
+    """OpenAI client cộng dồn số call / token / giây audio vào `usage`."""
+    lock = threading.Lock()
+
+    def hook(resp: httpx.Response) -> None:
+        resp.read()
+        try:
+            u = resp.json().get("usage") or {}
+        except ValueError:
+            u = {}
+        kind = "transcribe" if "/audio/" in resp.request.url.path else "chat"
+        with lock:
+            usage[f"{kind}_calls"] = usage.get(f"{kind}_calls", 0) + 1
+            for k in ("prompt_tokens", "completion_tokens", "input_tokens", "output_tokens", "seconds"):
+                if isinstance(u.get(k), (int, float)):
+                    usage[f"{kind}_{k}"] = usage.get(f"{kind}_{k}", 0) + u[k]
+
+    return OpenAI(api_key=settings.openai_api_key, http_client=httpx.Client(timeout=180, event_hooks={"response": [hook]}))
+
+
+@contextmanager
+def _timed(timings: dict[str, float], stage: str):
+    t = time.perf_counter()
+    try:
+        yield
+    finally:
+        timings[stage] = round(timings.get(stage, 0) + time.perf_counter() - t, 2)
+
+
+def _fade_mute(track: np.ndarray, s: int, e: int, fade: int) -> None:
+    """Tắt tiếng track[s:e] với fade-out/fade-in ở hai mép."""
+    s, e = max(0, s), min(len(track), e)
+    if e <= s:
+        return
+    track[s:e] = 0
+    if fade and s > 0:
+        a = max(0, s - fade)
+        track[a:s] *= np.linspace(1, 0, s - a, dtype=np.float32)[:, None]
+    if fade and e < len(track):
+        b = min(len(track), e + fade)
+        track[e:b] *= np.linspace(0, 1, b - e, dtype=np.float32)[:, None]
+
+
+def _rms(x: np.ndarray) -> float:
+    x = x[np.abs(x).max(axis=1) > 1e-3] if x.size else x
+    return float(np.sqrt(np.mean(x**2))) if x.size else 0.0
+
+
+def _speaker_refs(vocals: np.ndarray, sr: int, segments: list[dict], work: Path) -> tuple[list[Path], str]:
+    """Ghép các đoạn vocal dài nhất làm mẫu clone giọng; trả kèm transcript của mẫu (OmniVoice cần)."""
+    limit = REF_SECONDS.get(engine(), 15.0)
+    chosen, total = [], 0.0
+    for seg in sorted(segments, key=lambda s: s["end"] - s["start"], reverse=True):
+        if chosen and total + seg["end"] - seg["start"] > limit * 1.3:
+            continue
+        chosen.append(seg)
+        total += seg["end"] - seg["start"]
+        if total >= limit:
+            break
+    chosen.sort(key=lambda s: s["start"])
+    ref = work / "speaker_ref.wav"
+    sf.write(ref, np.concatenate([vocals[int(s["start"] * sr) : int(s["end"] * sr)] for s in chosen]).mean(axis=1), sr)
+    return [ref], " ".join(s["text"] for s in chosen)
+
+
+def _render_edit(
+    client: OpenAI, edit: Edit, language: str, refs: list[Path], ref_text: str, slot: float,
+    work: Path, idx: int, cache: JobCache, voice_key: str,
+) -> np.ndarray:
+    fitted = work / f"tts_{idx}.wav"
+
+    def synth(tag: str, duration: float | None = None) -> float:
+        """Sinh giọng, trim silence, trả về tỉ lệ độ dài so với khung (>1 = dài hơn khung)."""
+        text, out = edit.new_text, work / f"tts_{idx}_{tag}.wav"
+        raw = cache.get(("tts", voice_key, language, text, duration),
+                        lambda: synthesize(text, language, refs, out, ref_text, duration))
+        media.condition_tts(raw, fitted)
+        nonlocal last_raw
+        last_raw = raw
+        return sf.info(fitted).duration / slot if slot > 0 else 1.0
+
+    last_raw: Path | None = None
+    need = synth("raw0")
+    if need > settings.max_tempo:
+        max_chars = max(5, int(len(edit.new_text) * settings.max_tempo / need * 0.95))
+        text = edit.new_text
+        edit.new_text = cache.get(("shorten", voice_key, text), lambda: shorten(client, text, language, max_chars))
+        need = synth("raw1")
+    if need > 1.0 and supports_duration():
+        # OmniVoice đọc nhanh tự nhiên cho vừa khung thay vì tăng tốc audio
+        need = synth("fit", round(slot, 2))
+        edit.fit = "duration"
+    edit.tempo = round(min(max(need, 1.0), settings.max_tempo), 3)
+    if edit.tempo > 1.0:
+        media.condition_tts(last_raw, fitted, tempo=edit.tempo)
+        edit.fit = "atempo" if edit.fit == "natural" else "duration+atempo"
+    audio, _ = sf.read(fitted, dtype="float32", always_2d=True)
+    return audio
+
+
+def _download_images(urls: list[str], work: Path) -> list[str]:
+    """Tải ảnh frame vi phạm TikTok gửi kèm (đã check SSRF) thành data URL cho planner."""
+    import base64
+
+    out = []
+    for i, url in enumerate(urls[:6]):
+        try:
+            path = media.download(url, work / f"violation_{i}.img")
+            out.append("data:image/jpeg;base64," + base64.b64encode(path.read_bytes()).decode())
+        except Exception as exc:
+            log.warning("violation frame %s: %s", url[:80], exc)
+    return out
+
+
+def _norm_words(text: str) -> list[str]:
+    text = unicodedata.normalize("NFKC", text).lower()
+    text = "".join(c for c in text if not unicodedata.category(c).startswith(("M", "P", "S")))
+    return re.findall(r"\w+", text)
+
+
+def _caption_actions(edits: list[Edit], tracks: list[vision.TextTrack], taken: set[int]) -> list[dict]:
+    """Phụ đề in sẵn lặp lại voice-over: track nào trùng thời gian + nội dung với câu bị sửa thì thay bằng câu mới,
+    chia câu mới theo các khung phụ đề xuất hiện lần lượt."""
+    import difflib
+
+    def known(word: str, vocab: set[str]) -> bool:
+        # OCR hay dính thêm/thiếu 1 ký tự (vd "امضمون"), nên so gần đúng
+        return word in vocab or any(difflib.SequenceMatcher(None, word, v).ratio() >= 0.75 for v in vocab)
+
+    actions = []
+    for e in edits:
+        words = set(_norm_words(e.original_text))
+        cands = []
+        for t in tracks:
+            tw = _norm_words(t.text)
+            if t.id in taken or not tw or t.end <= e.start or t.start >= e.end:
+                continue
+            if sum(known(w, words) for w in tw) / len(tw) >= 0.6:
+                cands.append(t)
+        if not cands:
+            continue
+        # gom các track xuất hiện cùng lúc (phụ đề nhiều dòng) thành 1 khung
+        groups: list[list[vision.TextTrack]] = []
+        for t in sorted(cands, key=lambda x: x.start):
+            if groups and t.start < max(x.end for x in groups[-1]) - 0.2:
+                groups[-1].append(t)
+            else:
+                groups.append([t])
+        new_words = e.new_text.split()
+        if len(groups) == 1 or len(new_words) <= 8:
+            # câu mới ngắn: hiện nguyên câu suốt thời gian của các khung phụ đề cũ
+            ids = [x.id for g in groups for x in g]
+            taken.update(ids)
+            actions.append({"type": "replace_text", "track_ids": ids, "new_text": e.new_text})
+            continue
+        span = lambda g: max(x.end for x in g) - min(x.start for x in g)
+        total = sum(span(g) for g in groups) or 1.0
+        cursor = 0
+        for i, g in enumerate(groups):
+            n = len(new_words) - cursor if i == len(groups) - 1 else max(1, round(span(g) / total * len(new_words)))
+            chunk = " ".join(new_words[cursor:cursor + n])
+            cursor += n
+            ids = [x.id for x in g]
+            taken.update(ids)
+            actions.append({"type": "replace_text", "track_ids": ids, "new_text": chunk} if chunk
+                           else {"type": "remove_text", "track_ids": ids})
+    return actions
+
+
+def _even(frames: list, limit: int) -> list:
+    if len(frames) <= limit:
+        return frames
+    step = len(frames) / limit
+    return [frames[int(i * step)] for i in range(limit)]
+
+
+def _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cache, hint, timed) -> np.ndarray:
+    """Viết lại câu thoại vi phạm, đọc lại bằng giọng clone và ghép vào vocal stem. Trả về vocal mới."""
+    reason_lines = result.reject_reasons
+    new_vocals = vocals.copy()
+    with timed("rewrite"):
+        script_key = _digest(json.dumps([language, reason_lines, [x["text"] for x in segments]], ensure_ascii=False))
+        audio_plan = cache.get(("rewrite", script_key), lambda: plan_edits(client, segments, language, reason_lines, hint))
+    if not audio_plan["edits"]:
+        return new_vocals
+    by_id = {s["id"]: s for s in segments}
+    refs, ref_text = _speaker_refs(vocals, sr, segments, work)
+    fade = int(FADE * sr)
+    for idx, e in enumerate(audio_plan["edits"]):
+        first, last = by_id[e["segment_ids"][0]], by_id[e["segment_ids"][-1]]
+        prev_end = max((s["end"] for s in segments if s["end"] <= first["start"]), default=0.0)
+        next_start = min((s["start"] for s in segments if s["start"] >= last["end"]), default=len(vocals) / sr)
+        start = max(prev_end, first["start"] - 0.05)
+        end = min(next_start, last["end"] + 0.1)
+        edit = Edit(
+            segment_ids=e["segment_ids"], start=round(start, 3), end=round(end, 3),
+            original_text=" ".join(by_id[i]["text"] for i in e["segment_ids"]),
+            new_text=e["new_text"], reason=e["reason"],
+        )
+        with timed("tts"):
+            tts = _render_edit(client, edit, language, refs, ref_text, end - start, work, idx, cache, script_key)
+        s, e_ = int(start * sr), int(end * sr)
+        target = _rms(vocals[s:e_])
+        if target and (cur := _rms(tts)):
+            tts *= target / cur
+        n = min(len(tts), len(new_vocals) - s)
+        _fade_mute(new_vocals, s, max(e_, s + n), fade)
+        new_vocals[s : s + n] += tts[:n]
+        result.edits.append(edit)
+    return new_vocals
+
+
+def process_item(
+    item: AdItem, result: ItemResult, reasons: list[ReviewReason], work: Path, out_path: Path,
+    campaign: str | None, cache: JobCache | None = None,
+) -> None:
+    cache = cache or JobCache()
+    client = _openai_client(result.usage)
+    timed = lambda stage: _timed(result.timings, stage)
+    work.mkdir(parents=True, exist_ok=True)
+    result.reject_reasons = [r.summary() for r in reasons]
+    if not reasons:
+        result.state, result.error = "no_changes", "không có reject reason"
+        return
+    if not item.video_url:
+        raise ValueError("thiếu video_url")
+
+    with timed("download"):
+        video = media.download(item.video_url, work / "source.mp4")
+        video_key = _digest(video.read_bytes())
+    info = vision.video_info(video)
+    has_audio = media.has_audio(video)
+
+    # --- phân tích audio: tách giọng + transcript ---
+    segments, language, vocals, bgm, sr = [], None, None, None, 0
+    if has_audio:
+        with timed("separate"):
+            mix_wav = media.extract_audio(video, work / "mix.wav")
+            audio_key = _digest(mix_wav.read_bytes())
+            vocals, bgm, sr = cache.get(("separate", audio_key), lambda: separate(mix_wav))
+        vocals_path = work / "vocals.wav"
+        sf.write(vocals_path, vocals, sr)
+        with timed("transcribe"):
+            tr = cache.get(("transcribe", audio_key),
+                           lambda: transcribe(client, media.to_mono_16k(vocals_path, work / "vocals_16k.wav")))
+        segments, language = tr["segments"], tr["language"]
+        result.language = language
+
+    # --- phân tích hình: OCR chạy nền (cần ngôn ngữ để chọn bộ chữ), song song với lượt triage của planner ---
+    planner_frames = _even(vision.sample_frames(video, settings.planner_fps, 384), settings.max_planner_frames)
+    violation_images = _download_images([u for r in reasons for u in r.violation_frames] + item.violation_frames, work)
+    hint = " | ".join(x for x in (campaign, item.smart_ad_name, Path(urlparse(item.video_url).path).name) if x)
+    stop_ocr = threading.Event()
+
+    def run_ocr():
+        t0 = time.perf_counter()
+        tracks = vision.ocr_tracks(vision.sample_frames(video, settings.ocr_fps, 960), language or "en", settings.ocr_fps, stop_ocr)
+        result.timings["ocr"] = round(time.perf_counter() - t0, 2)
+        return tracks
+
+    with ThreadPoolExecutor(1) as bg:
+        ocr_future = bg.submit(lambda: cache.get(("ocr", video_key), run_ocr))
+        with timed("triage"):
+            quick = cache.get(("triage", video_key, tuple(result.reject_reasons)), lambda: triage(
+                client, reasons, segments, planner_frames, violation_images, hint))
+        if quick["decision"] == "unfixable":
+            stop_ocr.set()
+            result.plan = {"decision": "unfixable", "reason": quick["reason"], "stage": "triage"}
+            result.state, result.error = "no_changes", quick["reason"] or "không sửa được bằng cách chỉnh video"
+            return
+        tracks = ocr_future.result()
+    track_map = {t.id: t for t in tracks}
+
+    with timed("plan"):
+        plan_key = _digest(json.dumps([video_key, [r.model_dump() for r in reasons]], ensure_ascii=False))
+        plan = cache.get(("plan", plan_key), lambda: plan_fix(
+            client, reasons, info.duration, segments, language, tracks, planner_frames, violation_images, hint))
+    result.plan = plan
+    (work / "plan.json").write_text(json.dumps({"plan": plan, "tracks": [t.public() for t in tracks]},
+                                               ensure_ascii=False, indent=1), encoding="utf-8")
+    log.info("ad %s plan: %s", item.smart_ad_id, json.dumps(plan, ensure_ascii=False)[:500])
+    if plan["decision"] != "fix":
+        result.state, result.error = "no_changes", plan["reason"] or "không sửa được bằng cách chỉnh video"
+        return
+
+    new_vocals = vocals
+    if plan["fix_audio"] and segments and language:
+        new_vocals = _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cache, hint, timed)
+
+    actions = list(plan["visual_actions"])
+    if plan["sync_captions"] and result.edits:
+        taken = {i for a in actions for i in a.get("track_ids", [])}
+        actions += _caption_actions(result.edits, tracks, taken)
+    if not result.edits and not actions:
+        result.state, result.error = "no_changes", plan["notes"] or "planner không đưa ra thao tác sửa nào"
+        return
+
+    mixed = None
+    if has_audio:
+        mix = new_vocals + bgm
+        peak = float(np.abs(mix).max())
+        if peak > 0.99:
+            mix *= 0.99 / peak
+        mixed = work / "final_mix.wav"
+        sf.write(mixed, mix, sr, subtype="FLOAT")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    cuts = [(a["start"], a["end"]) for a in actions if a["type"] == "cut"]
+    visual = [a for a in actions if a["type"] != "cut"]
+    if visual or cuts:
+        with timed("render"):
+            regions = video_edit.build_regions(visual, track_map, info, lambda t: vision.frame_at(video, t))
+            video_edit.render(video, mixed, out_path, info, regions, cuts)
+    else:
+        with timed("mux"):
+            media.mux(video, mixed, out_path)
+    result.visual_edits = [{**a, **({"texts": [track_map[i].text for i in a["track_ids"]]} if "track_ids" in a else {})}
+                           for a in actions]
+    result.state = "done"
