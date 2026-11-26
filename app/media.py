@@ -11,7 +11,7 @@ UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like 
 
 
 def run(*args: str) -> str:
-    proc = runctx.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", *args], capture_output=True, text=True,
+    proc = runctx.run(["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error", "-y", *args], capture_output=True, text=True,
                       encoding="utf-8", errors="replace")
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg failed: {proc.stderr.strip()[-800:]}")

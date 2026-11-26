@@ -49,7 +49,7 @@ Công cụ planner có thể chọn:
 | `sync_captions` | Có phụ đề in sẵn lặp lại lời thoại | Phụ đề của câu bị sửa được thay bằng câu mới, cùng vị trí / màu / cỡ chữ |
 | `replace_text` | Text vi phạm có cách nói hợp lệ, text sai chính tả / viết hoa / ký hiệu loạn | Xoá text cũ, vẽ text mới cùng vị trí, màu chữ + viền lấy từ text cũ |
 | `remove_text` | Text vi phạm, không cần thay | Xoá text |
-| `remove_region` | Pop-up, banner, số tiền, badge, logo TikTok / thương hiệu khác, QR code, nút giả, dữ liệu cá nhân | Inpaint; nền đứng yên thì chép lại nền từ frame sạch. Vùng > 45% khung hình tự đổi thành `cut` |
+| `remove_region` | Pop-up, banner, số tiền, badge, QR code, nút giả, dữ liệu cá nhân | Inpaint; nền đứng yên thì chép lại nền từ frame sạch. Vùng > 45% khung hình tự đổi thành `cut`. **Watermark, handle, logo bên thứ 3** (kể cả logo TikTok): luôn làm mờ (`method: blur`), kể cả khi lý do reject không nhắc tới |
 | `cut` | Cả shot vi phạm (màn hình rút tiền, cảnh gợi dục, máu me...) | Bỏ đoạn đó khỏi cả hình lẫn tiếng; tổng thời lượng cắt + xoá vùng lớn tối đa `MAX_CUT_RATIO` (35%) |
 | `add_disclaimer` | Ngành bắt buộc disclaimer (tài chính, rượu, cờ bạc, sức khoẻ, giảm cân) hoặc promotion cần "Terms apply" | Dòng chữ trên nền mờ ở vùng an toàn, đúng ngôn ngữ của ad (en / es / pt / ar / fr / de / it) |
 | (tự động) nhãn AIGC | Voice-over đã được clone | "AI-generated voice" / "Voz generada con IA"... ở trên cùng, kèm `action_required: aigc_label` |
@@ -64,7 +64,7 @@ Công cụ planner có thể chọn:
 - **Luật chung** (bất kể nhóm nào):
   - Không né review bằng nói giảm, viết sai chính tả, che một phần.
   - **Không blur / pixel hoá để che**: policy Ad format cấm "columns or pixels to partially cover images".
-  - Không xoá watermark của footage bên thứ ba: cần có quyền sử dụng (`action_required: rights`).
+  - Watermark / handle / logo bên thứ 3 trong footage phải được làm mờ. Chỉ khi toàn bộ creative là nội dung có thương hiệu của người khác (trailer phim, quảng cáo của brand khác) thì làm mờ không còn ý nghĩa: `action_required: rights` / `new_creative`.
   - Bỏ nút giả, cảnh báo hệ thống giả, QR code dẫn sang trang ngoài (EU / UK / Trung Đông).
   - Video có giọng clone phải công bố AIGC.
 - **Ngành bị hạn chế theo khu vực / tuổi** (dating, rượu, tài chính, y tế, giảm cân...): làm sạch creative, gợi ý

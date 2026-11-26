@@ -200,7 +200,7 @@ def _draw_lines(lines: list[str], font: Path, size: int, W: int, H: int, color: 
             draws.append(f"drawtext=fontfile='{esc(font)}':textfile='{esc(tf)}':fontsize={size}:fontcolor={color}"
                          f":borderw={max(1, size // 12)}:bordercolor={border}:x=(w-text_w)/2:y={top + i * line_h}+({line_h}-th)/2")
         out = Path(td) / "t.png"
-        runctx.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black@0.0:s={W}x{H},format=rgba",
+        runctx.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", f"color=c=black@0.0:s={W}x{H},format=rgba",
                         "-vf", ",".join(draws), "-frames:v", "1", str(out)], check=True, capture_output=True)
         return np.array(Image.open(out).convert("RGBA"))
 
@@ -356,8 +356,10 @@ def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: Video
         elif a["type"] == "remove_region":
             box = _refine_region(a, info, frame_at)
             x0, y0, x1, y1 = box
-            # Làm mờ 1 khối màu đặc vẫn để lại khối màu, nên chỉ blur khi vùng quá lớn để inpaint
-            method = "blur" if blur_only or (x1 - x0) * (y1 - y0) > 0.2 * info.width * info.height else "inpaint"
+            # Làm mờ 1 khối màu đặc vẫn để lại khối màu, nên mặc định inpaint; blur khi vùng quá lớn để inpaint,
+            # khi request ép blur, hoặc khi planner chọn blur (watermark/handle trong suốt không inpaint sạch được)
+            big = (x1 - x0) * (y1 - y0) > 0.2 * info.width * info.height
+            method = "blur" if blur_only or big or a.get("method") == "blur" else "inpaint"
             regions.append(Region(max(0.0, a["start"] - TIME_PAD), min(info.duration, a["end"] + TIME_PAD), box, method))
     _with_ref(regions, info, frame_at)
     return regions
@@ -411,7 +413,7 @@ def _gray_frames(video: Path, info: VideoInfo, t0: float, t1: float) -> tuple[np
     t0, t1 = max(0.0, t0), min(info.duration, t1)
     w = 64
     h = max(2, int(round(info.height * w / info.width / 2)) * 2)
-    raw = runctx.run(["ffmpeg", "-v", "error", "-ss", f"{t0:.3f}", "-t", f"{t1 - t0:.3f}", "-i", str(video),
+    raw = runctx.run(["ffmpeg", "-nostdin", "-v", "error", "-ss", f"{t0:.3f}", "-t", f"{t1 - t0:.3f}", "-i", str(video),
                       "-vf", f"scale={w}:{h},format=gray", "-f", "rawvideo", "-"], capture_output=True).stdout
     frames = np.frombuffer(raw[: len(raw) // (w * h) * w * h], np.uint8).reshape(-1, h, w).astype(np.float32)
     return t0 + (np.arange(len(frames)) + 0.5) / info.fps, frames
@@ -493,9 +495,9 @@ def render(video: Path, audio_wav: Path | None, out: Path, info: VideoInfo, regi
         sf.write(cut_wav, cut_audio(audio, sr, cuts) if cuts and not audio_is_cut else audio, sr, subtype="FLOAT")
         audio_args = ["-i", str(cut_wav), "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k", "-shortest"]
     w, h, size = info.width, info.height, info.width * info.height * 3
-    dec = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(video), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
+    dec = subprocess.Popen(["ffmpeg", "-nostdin", "-v", "error", "-i", str(video), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
     enc = subprocess.Popen(
-        ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{info.fps:.6f}", "-i", "-",
+        ["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{w}x{h}", "-r", f"{info.fps:.6f}", "-i", "-",
          *audio_args, "-c:v", "libx264", "-preset", "veryfast", "-crf", str(settings.video_crf),
          "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)],
         stdin=subprocess.PIPE,
@@ -515,9 +517,18 @@ def render(video: Path, audio_wav: Path | None, out: Path, info: VideoInfo, regi
             frame = np.frombuffer(buf, np.uint8).reshape(h, w, 3)
             enc.stdin.write(_apply(frame.copy(), t, regions).tobytes() if regions else buf)
     finally:
-        enc.stdin.close()
-        dec.wait()
-        enc.wait()
+        # exception giữa chừng (vd enc chết làm gãy pipe) thì dec vẫn đang ghi vào pipe không ai đọc:
+        # chờ wait() sẽ treo vĩnh viễn, phải giết process không thoát kịp
+        try:
+            enc.stdin.close()
+        except Exception:
+            pass
+        for proc in (dec, enc):
+            try:
+                proc.wait(timeout=15)
+            except Exception:
+                proc.kill()
+                proc.wait()
         cut_wav.unlink(missing_ok=True)
         if ctx := runctx.current():
             ctx.unregister(dec)

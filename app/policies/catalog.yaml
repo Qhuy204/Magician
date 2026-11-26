@@ -107,8 +107,8 @@ disclaimers:
 # Luật chung áp cho mọi ad (đưa vào planner / recheck dù reason thuộc nhóm nào)
 global_rules:
   - "Never hide a violation instead of removing it: no vague rewording, euphemisms, misspellings, coded words, partial covering, or moving the claim elsewhere."
-  - "Do not cover images with blur, columns or pixels (Ad format: 'must not use columns or pixels to partially cover images'; blurred third-party watermarks and blurred suggestive images are themselves violations). Remove with cut or remove_region (inpaint) instead."
-  - "Do not remove or hide third-party watermarks or credits: footage without usage rights must be replaced (action_required: rights), not masked."
+  - "Do not cover VIOLATING CONTENT with blur, columns or pixels to hide it (Ad format: 'must not use columns or pixels to partially cover images'). Claims, pop-ups and violating shots must be removed with cut or remove_region (inpaint), not blurred over."
+  - "Third-party watermarks, creator handles and brand logos visible in the footage MUST be obscured with remove_region method 'blur' (blur is required for all of them, watermark or solid logo). Obscuring third-party IP is the compliance fix itself, not a cover-up. Only when the whole creative is someone else's branded content (a trailer, another brand's commercial) is blurring pointless: then action_required rights / new_creative."
   - "Do not invent new claims, numbers, guarantees or features. Rewrites describe only what the product legitimately does."
   - "Remove fake interactive elements: fake play/close buttons, fake pop-ups, fake system alerts, 'swipe up' or gestures that do nothing."
   - "Remove QR codes that lead to third-party sites (not allowed in the EU, UK, SA, AE and most of the Middle East)."
@@ -275,9 +275,10 @@ groups:
     keywords: [intellectual property, copyright, trademark, brand, logo, counterfeit, replica, unauthorized,
                tiktok logo, tiktok bestseller, bytedance, endorsement, partnership with tiktok, watermark, music rights]
     rules:
-      - "No unauthorized third-party names, logos or brands that suggest affiliation (remove with remove_region inpaint, never blur)."
-      - "No TikTok logo, 'TikTok Bestseller' or implied TikTok/ByteDance endorsement (remove)."
-      - "Clips from unauthorized media sources cannot be fixed by masking watermarks: action_required rights."
+      - "No unauthorized third-party names, logos or brands that suggest affiliation: obscure with remove_region method 'blur'."
+      - "No TikTok logo, 'TikTok Bestseller' or implied TikTok/ByteDance endorsement: obscure with method 'blur' or remove."
+      - "Watermarks / creator handles from any platform must be blurred even when no rejection reason mentions them."
+      - "Only when the entire creative is third-party branded content (film trailer, another brand's commercial) does obscuring not help: action_required rights / new_creative."
       - "Counterfeit / replica products: unfixable."
     product_unfixable: [counterfeit goods, replicas, pirated digital products]
     out_of_video: [rights]

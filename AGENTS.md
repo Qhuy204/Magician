@@ -72,6 +72,11 @@ tuỳ chọn XTTS-v2; mẫu từ chính vocal stem) → OmniVoice `duration` / a
 - Git: https://github.com/Qhuy204/Magician.git (`data/`, `.env` bị ignore).
 - Shell heredoc dài (>~150 dòng) bị cắt → ghi script ra file bằng tool write rồi chạy.
 
+## Lỗi đã gặp
+- ffmpeg đọc lệnh từ stdin: khi stdin là pipe không có EOF (pytest, 1 số môi trường service) process ffmpeg TREO dù
+  input là file. Mọi lệnh ffmpeg phải có `-nostdin`. Render qua pipe (video_edit.render) mà exception giữa chừng thì
+  decoder vẫn ghi vào pipe không ai đọc → wait() treo vĩnh viễn: phải wait(timeout) rồi kill.
+
 ## API
 - `POST /jobs?callback_url=...` (+ header `Idempotency-Key`) body = JSON review (format cũ `items` hoặc mới `ads`). 202 + `job_id`.
 - `GET /jobs`, `GET /jobs/{id}` (progress, queue_position, item stage/attempt/error_code/retryable/next_retry_at),

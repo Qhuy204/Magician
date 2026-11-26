@@ -32,7 +32,7 @@ def lang_code(name: str | None) -> str | None:
 def speech_spans(audio: Path, total: float) -> list[tuple[float, float]]:
     """Tìm các đoạn có tiếng nói dựa trên khoảng lặng của vocal stem."""
     err = runctx.run(
-        ["ffmpeg", "-hide_banner", "-i", str(audio), "-af", f"silencedetect=n=-35dB:d={MIN_SILENCE}", "-f", "null", "-"],
+        ["ffmpeg", "-nostdin", "-hide_banner", "-i", str(audio), "-af", f"silencedetect=n=-35dB:d={MIN_SILENCE}", "-f", "null", "-"],
         capture_output=True, text=True,
     ).stderr
     starts = [float(x) for x in re.findall(r"silence_start: ([\d.]+)", err)]

@@ -106,7 +106,7 @@ def test_validate_disclaimer_findings_and_outside_only():
     kinds = [a["type"] for a in out["visual_actions"]]
     assert kinds == ["add_disclaimer", "remove_region"]
     assert out["visual_actions"][0] == {"type": "add_disclaimer", "key": "results_vary", "start": 0.0, "end": 20.0}
-    assert out["visual_actions"][1]["method"] == "inpaint"  # planner không được chọn blur
+    assert out["visual_actions"][1]["method"] == "blur"  # planner được chọn blur cho watermark/handle
     assert len(out["findings"]) == 1 and out["action_required"] == [{"type": "targeting", "detail": "exclude SA"}]
     only_outside = _validate({"decision": "fix", "visual_actions": [], "fix_audio": False,
                               "action_required": [{"type": "landing_page", "detail": "price mismatch"}]}, [], 20.0, 1)

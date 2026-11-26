@@ -70,7 +70,7 @@ def sample_frames(path: Path, fps: float, max_side: int) -> list[tuple[float, np
     scale = min(1.0, max_side / max(info.width, info.height))
     w, h = int(info.width * scale) // 2 * 2, int(info.height * scale) // 2 * 2
     raw = runctx.run(
-        ["ffmpeg", "-v", "error", "-i", str(path), "-vf", f"fps={fps},scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        ["ffmpeg", "-nostdin", "-v", "error", "-i", str(path), "-vf", f"fps={fps},scale={w}:{h}", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
         capture_output=True, check=True,
     ).stdout
     frames = np.frombuffer(raw, np.uint8).reshape(-1, h, w, 3)
@@ -167,7 +167,7 @@ def frame_at(path: Path, t: float) -> np.ndarray:
     """1 frame RGB độ phân giải gốc tại thời điểm t."""
     info = video_info(path)
     raw = runctx.run(
-        ["ffmpeg", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(path), "-frames:v", "1",
+        ["ffmpeg", "-nostdin", "-v", "error", "-ss", f"{max(0.0, t):.3f}", "-i", str(path), "-frames:v", "1",
          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True,
     ).stdout
     return np.frombuffer(raw[: info.width * info.height * 3], np.uint8).reshape(info.height, info.width, 3)

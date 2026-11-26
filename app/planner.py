@@ -35,9 +35,12 @@ per second, each labelled with its timestamp), decide how to fix the ad with the
 - replace_text {track_ids, new_text}: erase on-screen text and draw compliant text in the same place, same language.
   Also used to correct spelling / excessive capitalization / symbols among letters.
 - remove_text {track_ids}: erase on-screen text with nothing in its place.
-- remove_region {start, end, bbox, what}: erase (inpaint) a non-text graphic (pop-up, banner, cash counter, badge,
-  TikTok logo, unauthorized brand logo, QR code, fake button, someone's personal data) inside bbox during [start, end].
-  The bbox must enclose the whole graphic including its text, shadow and border.
+- remove_region {start, end, bbox, what, method}: erase a non-text graphic (pop-up, banner, cash counter, badge,
+  watermark, creator handle, TikTok logo, unauthorized brand logo, QR code, fake button, someone's personal data)
+  inside bbox during [start, end]. The bbox must enclose the whole graphic including its text, shadow and border.
+  method is "inpaint" (default) or "blur": use "blur" for ALL watermarks, creator handles and third-party logos
+  (brand logos, TikTok logo), whether semi-transparent or solid. Watermarks/handles/logos must be blurred even
+  when no rejection reason mentions them.
 - cut {start, end, what}: drop a time range from the video and audio, for shots whose whole content violates policy
   (e.g. a full-screen payout screen, a suggestive or gory shot). Cuts must not split a spoken sentence and should
   follow shot boundaries.
@@ -278,12 +281,14 @@ def _validate(plan: dict, tracks: list[TextTrack], duration: float, n_reasons: i
                     continue
                 if x1 - x0 < 0.01 or y1 - y0 < 0.01:
                     continue
-                if (x1 - x0) * (y1 - y0) > MAX_INPAINT_AREA:
+                method = "blur" if a.get("method") == "blur" else "inpaint"
+                if method == "inpaint" and (x1 - x0) * (y1 - y0) > MAX_INPAINT_AREA:
                     # inpaint vùng gần cả khung chỉ ra 1 mảng nhoè => cắt cả đoạn
+                    # (vùng blur thì không bị vấn đề này, nhưng vẫn tính vào giới hạn cắt ở dưới)
                     act |= {"type": "cut", "what": f"{act['what']} (vùng quá lớn để xoá, chuyển sang cắt)"}
                     actions.append(act)
                     continue
-                act |= {"bbox": [x0, y0, x1, y1], "method": "inpaint"}
+                act |= {"bbox": [x0, y0, x1, y1], "method": method}
             actions.append(act)
     cut_total = sum(a["end"] - a["start"] for a in actions
                     if a["type"] == "cut" or (a["type"] == "remove_region" and _area(a["bbox"]) > LARGE_AREA))
