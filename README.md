@@ -442,7 +442,7 @@ Body tùy chọn `{"smart_ad_ids": [...]}`; bỏ trống = huỷ mọi item chư
 Trang tiếp: truyền `next_before` vào `before`.
 
 ### GET /files/...
-Link trong `output_video_url` có hạn `FILE_URL_TTL_HOURS` (mặc định 7 ngày). Thiếu hoặc sai `exp`/`sig` thì trả `404`.
+Link trong `output_video_url` có hạn `FILE_URL_TTL_HOURS` (mặc định 7 ngày). Thiếu hoặc sai `exp`/`sig` thì trả `404`. Link được **ký lại mỗi lần** gọi `GET /jobs/{job_id}`, nên luôn lấy link mới từ response thay vì lưu link cũ — link lưu sẵn vẫn dùng được trong thời hạn của nó.
 Video bị xoá sau `OUTPUT_RETENTION_DAYS` kể từ lúc job xong.
 
 ### Mã lỗi HTTP
