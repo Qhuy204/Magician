@@ -12,6 +12,12 @@ log = logging.getLogger(__name__)
 
 # remove_region lớn hơn tỉ lệ này của khung hình thì đổi thành cut
 MAX_INPAINT_AREA = 0.45
+# remove_region lớn hơn tỉ lệ này tính vào giới hạn thời lượng như cut
+LARGE_AREA = 0.3
+
+
+def _area(b: list[float]) -> float:
+    return (b[2] - b[0]) * (b[3] - b[1])
 
 SYSTEM = """You are the compliance editor for TikTok video ads. Given TikTok's rejection reasons, the voice-over transcript,
 the on-screen text detected by OCR (text tracks with ids, time ranges and normalized bounding boxes [x0,y0,x1,y1]),
@@ -40,6 +46,14 @@ Rules:
   (the new line is generated for the shortened timeline).
 - First identify the product actually advertised from the visuals (end card, app name/logo, store badges, app UI) and
   what it legitimately does. Report it in "product".
+- "declared_product", when given, is the advertiser's statement of the product actually being advertised. It is
+  authoritative over what the footage suggests: creatives are sometimes third-party footage, so shots showing a
+  different product or category (e.g. dating profiles and "date now" buttons, partner-monitoring screens) are false
+  depictions to remove (remove_region / remove_text / cut), and fix_audio rewrites the voice-over to the declared
+  product. It is still "unfixable" when the declared product itself is prohibited, or when such footage makes up
+  most of the video so nothing would remain that actually shows the declared product.
+- The total duration of shots that are cut or where a large part of the frame (> 30%) must be erased must stay within
+  {max_cut_pct}% of the video; otherwise return "unfixable".
 - Distinguish a FALSE CLAIM about a legitimate product from a PROHIBITED PRODUCT:
   * False claim (fixable): the product shown is a legitimate app (e.g. phone-to-phone data transfer/backup, call
     filtering, caller ID), but the voice-over or on-screen text claims a prohibited capability it does not provide
@@ -75,6 +89,9 @@ Identify the product from the visuals (end card, app name/logo, store badges). I
 violation is a false claim in the voice-over or text about a capability the product does not provide (e.g. claiming a
 data-transfer app lets you read other people's chats), it is fixable: the voice-over can be fully rewritten to the
 product's real function and the shots depicting the false capability removed, even if the claim is in every spoken line.
+If "declared_product" is given it is the advertiser's statement of the real product and overrides what the footage
+suggests (the creative may be third-party footage of another app); footage of another product or category is then a
+false depiction that can be removed, unless it makes up most of the video or the declared product itself is prohibited.
 A single misleading pop-up, badge, caption or exaggerated claim on an otherwise legitimate product is fixable.
 Answer "unfixable" only when you are certain; when in doubt answer "fix" (a detailed planner checks again later).
 Respond with JSON only: {"decision": "fix" | "unfixable", "reason": str, "product": str}"""
@@ -92,9 +109,10 @@ def _frame_content(frames: list, violation_images: list[str]) -> list[dict]:
 
 
 def triage(client: OpenAI, reasons: list[ReviewReason], segments: list[dict], frames: list,
-           violation_images: list[str], hint: str | None) -> dict:
+           violation_images: list[str], hint: str | None, product: str | None = None) -> dict:
     """Lượt lọc nhanh (chạy song song với OCR): ad hỏng ở bản chất sản phẩm thì dừng sớm, khỏi chờ OCR."""
-    payload = {"ad": hint, "rejection_reasons": [r.model_dump(exclude={"violation_frames"}, exclude_defaults=True) for r in reasons],
+    payload = {"ad": hint, "declared_product": product,
+               "rejection_reasons": [r.model_dump(exclude={"violation_frames"}, exclude_defaults=True) for r in reasons],
                "voice_over": " ".join(s["text"] for s in segments)}
     r = client.chat.completions.create(
         model=settings.vision_model, response_format={"type": "json_object"},
@@ -117,9 +135,11 @@ def _track_digest(tracks: list[TextTrack], limit: int = 150) -> list[dict]:
 def plan_fix(
     client: OpenAI, reasons: list[ReviewReason], duration: float, segments: list[dict], language: str | None,
     tracks: list[TextTrack], frames: list[tuple[float, "object"]], violation_images: list[str], hint: str | None,
+    product: str | None = None,
 ) -> dict:
     payload = {
         "ad": hint,
+        "declared_product": product,
         "video_duration_s": round(duration, 2),
         "language": language,
         "rejection_reasons": [r.model_dump(exclude={"violation_frames"}, exclude_defaults=True) for r in reasons],
@@ -170,11 +190,13 @@ def _validate(plan: dict, tracks: list[TextTrack], duration: float) -> dict:
                     continue
                 act |= {"bbox": [x0, y0, x1, y1], "method": "blur" if a.get("method") == "blur" else "inpaint"}
             actions.append(act)
-    cut_total = sum(a["end"] - a["start"] for a in actions if a["type"] == "cut")
+    cut_total = sum(a["end"] - a["start"] for a in actions
+                    if a["type"] == "cut" or (a["type"] == "remove_region" and _area(a["bbox"]) > LARGE_AREA))
     decision = plan.get("decision") if plan.get("decision") in ("fix", "unfixable") else "unfixable"
     reason = plan.get("reason", "")
     if decision == "fix" and cut_total > settings.max_cut_ratio * duration:
-        decision, reason = "unfixable", f"cần cắt {cut_total:.1f}s / {duration:.1f}s, vượt giới hạn {settings.max_cut_ratio:.0%}"
+        decision, reason = "unfixable", (f"cần cắt / xoá phần lớn khung hình trong {cut_total:.1f}s / {duration:.1f}s, "
+                                         f"vượt giới hạn {settings.max_cut_ratio:.0%}")
     if decision == "fix" and not actions and not plan.get("fix_audio"):
         decision, reason = "unfixable", reason or "không tìm thấy vi phạm trong video để sửa"
     return {

@@ -207,6 +207,8 @@ Field thừa được giữ nguyên, không gây lỗi. Ví dụ format mới:
 | `video_id` / `rejected_video_id`, `preview_video_id` | | Khớp reject reason của TikTok với đúng video; cũng dùng để nhận ra ad gửi trùng |
 | `reasons` / `reject_reasons` | | Mỗi phần tử là chuỗi hoặc object `{category, detail, timestamps, affected_regions, affected_placements, violation_frames}`. `timestamps` dạng `"0:22–0:24"` giúp planner tìm đúng chỗ. Có thì dùng luôn, không gọi TikTok API |
 | `violation_frames` | | URL ảnh frame vi phạm (nếu có); planner nhìn ảnh để xác định phần bị flag |
+| `product` | | Sản phẩm thật đang quảng cáo, vd `"Shieldy - call app: caller ID, chặn cuộc gọi rác"`. Đặt ở cấp job hoặc từng ad (ad ghi đè job). Planner coi đây là sự thật: creative lấy từ nơi khác (footage app hẹn hò, theo dõi người yêu...) thì các cảnh đó bị blur / cắt, voice-over viết lại theo sản phẩm này. Vẫn `unfixable` nếu footage sai chiếm phần lớn video (cắt hoặc xoá vùng > 30% khung quá `MAX_CUT_RATIO` thời lượng) hoặc chính sản phẩm bị cấm |
+| `visual_method` | | `auto` (mặc định `VISUAL_METHOD`): inpaint / thay chữ / blur tuỳ chỗ. `blur`: mọi chỗ sửa hình đều làm mờ, kể cả text (không vẽ chữ mới). Cấp job hoặc từng ad |
 | `callback_url` | | Webhook nhận kết quả, chỉ https |
 | `process_statuses` | | Mặc định `["UNAVAILABLE","PART_AVAILABLE"]` |
 
@@ -329,11 +331,14 @@ Body (tùy chọn, bỏ trống = retry mọi item `failed` / `cancelled`):
   "smart_ad_ids": ["1881737028989330"],
   "video_urls": {"1881737028989330": "https://de-s3.storage.bunnycdn.com/...mp4?X-Amz-...(link mới)"},
   "reasons": {"1881737028989330": [{"category": "...", "detail": "..."}]},
+  "product": "Shieldy - call app: caller ID, spam call blocking",
+  "visual_method": "blur",
   "force": false
 }
 ```
 - `video_urls`: link mới cho item `source_expired`. Đổi link thì toàn bộ file tạm của item bị xoá, chạy lại từ đầu.
 - `reasons`: ghi đè reject reasons (kết quả triage/plan/rewrite cũ bị bỏ).
+- `product` / `visual_method`: ghi đè cho các item được retry (đổi `product` thì bỏ kết quả triage/plan/rewrite cũ).
 - `force: true` + `smart_ad_ids`: chạy lại cả item `done` / `no_changes` / `skipped` (bỏ kết quả triage/plan/rewrite, giữ video + transcript).
 - `200 {"retried": [...], "state": "running"}`; `409` nếu không có item nào retry được.
 
@@ -477,7 +482,8 @@ Khuyến nghị thêm ở phía Cloudflare: WAF rule chỉ cho IP của dashboar
 | `MAX_TEMPO` | `1.3` | Tốc độ đọc tối đa để vừa khung thời gian cũ |
 | `VISION_MODEL` | `gpt-6-luna` | Model đọc frame, triage + lập kế hoạch sửa (phải nhận ảnh) |
 | `OCR_FPS` / `PLANNER_FPS` / `MAX_PLANNER_FRAMES` | `2` / `1` / `60` | Mật độ frame cho OCR và cho planner |
-| `MAX_CUT_RATIO` | `0.35` | Cần cắt nhiều hơn tỉ lệ này thì coi là không sửa được |
+| `MAX_CUT_RATIO` | `0.35` | Thời lượng cắt + thời lượng xoá vùng lớn (> 30% khung) vượt tỉ lệ này thì coi là không sửa được |
+| `VISUAL_METHOD` | `auto` | Mặc định cho `visual_method` của request: `auto` hoặc `blur` |
 | `VIDEO_CRF` | `18` | Chất lượng encode lại (thấp = đẹp hơn, file nặng hơn) |
 | `MODELS_DIR` | `DATA_DIR/models` | Nơi lưu model EasyOCR + LaMa (tự tải lần đầu) |
 | `COQUI_TOS_AGREED` | | Chỉ cho XTTS: đặt `1` để xác nhận license CPML |

@@ -61,6 +61,11 @@ class AdItem(BaseModel):
     reasons: list[ReviewReason] | None = None
     # Ảnh frame vi phạm (URL) nếu dashboard có
     violation_frames: list[str] = []
+    # Sản phẩm thật đang quảng cáo (vd "Shieldy - call app: caller ID, spam blocking"). Ghi đè JobRequest.product.
+    # Planner coi đây là sự thật về sản phẩm, kể cả khi creative là footage lấy từ nơi khác.
+    product: str | None = None
+    # auto: planner chọn inpaint / thay chữ / blur; blur: mọi chỗ sửa hình đều làm mờ. Ghi đè JobRequest.visual_method
+    visual_method: Literal["auto", "blur"] | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -101,6 +106,8 @@ class JobRequest(BaseModel):
             v["items"] = v.pop("ads")
         return v
     callback_url: str | None = None
+    product: str | None = None
+    visual_method: Literal["auto", "blur"] | None = None
     # Mặc định chỉ xử lý ad bị reject (toàn phần hoặc một phần)
     process_statuses: list[str] = Field(default_factory=lambda: ["UNAVAILABLE", "PART_AVAILABLE"])
 
@@ -180,6 +187,9 @@ class RetryRequest(BaseModel):
     reasons: dict[str, list[ReviewReason]] = {}
     # Cho phép chạy lại cả item no_changes / done (khi chỉ định smart_ad_ids)
     force: bool = False
+    # Ghi đè sản phẩm thật / cách sửa hình cho các item được retry
+    product: str | None = None
+    visual_method: Literal["auto", "blur"] | None = None
 
 
 class CancelRequest(BaseModel):

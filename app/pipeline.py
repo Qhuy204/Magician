@@ -383,6 +383,7 @@ def process_item(
     planner_frames = _even(vision.sample_frames(video, settings.planner_fps, 384), settings.max_planner_frames)
     violation_images = _download_images([u for r in reasons for u in r.violation_frames] + item.violation_frames, work)
     hint = " | ".join(x for x in (campaign, item.smart_ad_name, Path(urlparse(item.video_url).path).name) if x)
+    declared = (item.product or "").strip() or None
     stop_ocr = threading.Event()
     if ctx := runctx.current():
         ctx.on_kill(stop_ocr.set)
@@ -403,8 +404,9 @@ def process_item(
     with ThreadPoolExecutor(1) as bg:
         ocr_future = bg.submit(lambda: cache.get(("ocr", video_key), run_ocr))
         with timed("triage"):
-            quick = cache.get(("triage", video_key, tuple(result.reject_reasons)), lambda: _persisted(
-                work / "triage.json", lambda: triage(client, reasons, segments, planner_frames, violation_images, hint)))
+            quick = cache.get(("triage", video_key, tuple(result.reject_reasons), declared), lambda: _persisted(
+                work / "triage.json",
+                lambda: triage(client, reasons, segments, planner_frames, violation_images, hint, declared)))
         if quick["decision"] == "unfixable":
             stop_ocr.set()
             result.plan = {"decision": "unfixable", "reason": quick["reason"], "stage": "triage"}
@@ -420,9 +422,10 @@ def process_item(
     track_map = {t.id: t for t in tracks}
 
     with timed("plan"):
-        plan_key = _digest(json.dumps([video_key, [r.model_dump() for r in reasons]], ensure_ascii=False))
+        plan_key = _digest(json.dumps([video_key, [r.model_dump() for r in reasons], declared], ensure_ascii=False))
         plan = cache.get(("plan", plan_key), lambda: _persisted(work / "plan_raw.json", lambda: plan_fix(
-            client, reasons, info.duration, segments, language, tracks, planner_frames, violation_images, hint)))
+            client, reasons, info.duration, segments, language, tracks, planner_frames, violation_images, hint,
+            declared)))
     result.plan = plan
     (work / "plan.json").write_text(json.dumps({"plan": plan, "tracks": [t.public() for t in tracks]},
                                                ensure_ascii=False, indent=1), encoding="utf-8")
@@ -443,7 +446,7 @@ def process_item(
     new_vocals = vocals
     if plan["fix_audio"] and segments and language:
         new_vocals = _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cache, hint, timed,
-                                        plan.get("product"))
+                                        declared or plan.get("product"))
 
     actions = list(plan["visual_actions"])
     if plan["sync_captions"] and result.edits:
@@ -468,11 +471,14 @@ def process_item(
     visual = [a for a in actions if a["type"] != "cut"]
     if visual or cuts:
         with timed("render"):
-            regions = video_edit.build_regions(visual, track_map, info, lambda t: vision.frame_at(video, t))
+            regions = video_edit.build_regions(visual, track_map, info, lambda t: vision.frame_at(video, t),
+                                               blur_only=item.visual_method == "blur")
             video_edit.render(video, mixed, out_path, info, regions, cuts, audio_is_cut)
     else:
         with timed("mux"):
             media.mux(video, mixed, out_path)
-    result.visual_edits = [{**a, **({"texts": [track_map[i].text for i in a["track_ids"]]} if "track_ids" in a else {})}
+    blur_only = item.visual_method == "blur"
+    result.visual_edits = [{**a, **({"texts": [track_map[i].text for i in a["track_ids"]]} if "track_ids" in a else {}),
+                            **({"method": "blur"} if blur_only and a["type"] != "cut" else {})}
                            for a in actions]
     result.state = "done"

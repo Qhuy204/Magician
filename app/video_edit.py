@@ -301,8 +301,10 @@ def _refine_region(a: dict, info: VideoInfo, frame_at) -> tuple[int, int, int, i
     return (max(0, px[0]), max(0, px[1]), min(info.width, px[2]), min(info.height, px[3]))
 
 
-def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: VideoInfo, frame_at) -> list[Region]:
-    """Chuyển action của planner thành vùng pixel; replace_text thì chuẩn bị sẵn ảnh text mới."""
+def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: VideoInfo, frame_at,
+                  blur_only: bool = False) -> list[Region]:
+    """Chuyển action của planner thành vùng pixel; replace_text thì chuẩn bị sẵn ảnh text mới.
+    blur_only: mọi vùng đều làm mờ (replace_text cũng chỉ làm mờ text cũ, không vẽ text mới)."""
     regions = []
     for a in actions:
         if a["type"] in ("remove_text", "replace_text"):
@@ -310,8 +312,8 @@ def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: Video
             for gi, g in enumerate(groups):
                 start, end = max(0.0, min(t.start for t in g) - TIME_PAD), min(info.duration, max(t.end for t in g) + TIME_PAD)
                 box = _px_box(_union(g), info, 0.25)
-                reg = Region(start, end, box, "inpaint")
-                if a["type"] == "replace_text" and gi == 0:
+                reg = Region(start, end, box, "blur" if blur_only else "inpaint")
+                if a["type"] == "replace_text" and gi == 0 and not blur_only:
                     tb = _px_box(_union(g), info, 0.0)
                     first = min(g, key=lambda t: t.start)
                     fx0, fy0, fx1, fy1 = _px_box(first.bbox, info, 0.0)
@@ -327,7 +329,7 @@ def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: Video
             box = _refine_region(a, info, frame_at)
             x0, y0, x1, y1 = box
             # Làm mờ 1 khối màu đặc vẫn để lại khối màu, nên chỉ blur khi vùng quá lớn để inpaint
-            method = "blur" if (x1 - x0) * (y1 - y0) > 0.2 * info.width * info.height else "inpaint"
+            method = "blur" if blur_only or (x1 - x0) * (y1 - y0) > 0.2 * info.width * info.height else "inpaint"
             regions.append(Region(max(0.0, a["start"] - TIME_PAD), min(info.duration, a["end"] + TIME_PAD), box, method))
     _with_ref(regions, info, frame_at)
     return regions

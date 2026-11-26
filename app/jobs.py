@@ -315,6 +315,8 @@ class JobManager:
         t0 = time.perf_counter()
         try:
             reasons = await self._reasons(job, req, item)
+            item.product = item.product or req.product
+            item.visual_method = item.visual_method or req.visual_method or settings.visual_method
             cache = self._caches.setdefault(job.job_id, JobCache())
             await asyncio.to_thread(self._call, ctx, process_item, item, work_res, reasons,
                                     self.work_dir(job.job_id, item.smart_ad_id), out, req.campaign_name, cache)
@@ -461,7 +463,11 @@ class JobManager:
                 shutil.rmtree(work, ignore_errors=True)  # video khác => mọi file trung gian không còn đúng
             if res.smart_ad_id in body.reasons:
                 item.reasons = body.reasons[res.smart_ad_id]
-            if res.smart_ad_id in body.reasons or res.state in ("done", "no_changes"):
+            if body.product:
+                item.product = body.product
+            if body.visual_method:
+                item.visual_method = body.visual_method
+            if res.smart_ad_id in body.reasons or body.product or res.state in ("done", "no_changes"):
                 for f in ("triage.json", "plan_raw.json", "rewrite.json"):
                     (work / f).unlink(missing_ok=True)
                 for f in work.glob("tts_*.wav") if work.exists() else []:
