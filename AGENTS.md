@@ -119,3 +119,6 @@ tuỳ chọn XTTS-v2; mẫu từ chính vocal stem) → OmniVoice `duration` / a
 - `blur()` vùng lớn phải downscale xuống ~200px trước khi GaussianBlur (kernel tỉ lệ vùng — full-frame k=321 tốn 291ms/frame, downscale còn ~1ms).
 - TTS mỗi câu có thể synth 2-3 lần (raw0 → shorten/lengthen LLM → raw1 → fill). Pass `fill` chỉ chạy khi câu < FILL_BELOW (0.7) khung — đệm kín khung tốn ~3s/câu không đáng.
 - `/status` có `live` (cpu/ram/gpu util), cache 4s — dashboard hiển thị meter. GPU stats qua pynvml (nvidia-ml-py), fallback nvidia-smi.
+- CDN TikTok (VN) drop SYN ngẫu nhiên theo IP (~30% connect timeout): `media.download` retry nhanh trong hàm
+  (`download_attempts`=4, connect timeout 8s thay vì 30s), scheduler retry chỉ là lớp cuối. Mỗi lần connect là
+  independent nên 4 lần đủ chặn hầu hết flake.

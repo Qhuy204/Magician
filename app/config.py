@@ -91,7 +91,9 @@ class Settings(BaseSettings):
                            "rewrite:180,tts:240,render:900,mux:180")
     # Timeout 1 lần gọi worker TTS; quá thì kill worker, spawn lại
     tts_call_timeout: float = 120
-    download_connect_timeout: float = 30
+    download_connect_timeout: float = 8
+    # CDN TikTok drop SYN ngẫu nhiên theo IP: số lần thử connect liền nhau trong 1 lần download
+    download_attempts: int = 4
     # Ổ chứa DATA_DIR còn ít hơn => /ready=503, POST /jobs=503, ngừng lấy item mới
     min_free_gb: float = 5
     work_retention_hours: float = 24

@@ -31,9 +31,32 @@ def has_audio(path: Path) -> bool:
     return any(s.get("codec_type") == "audio" for s in probe(path)["streams"])
 
 
+def _download_once(url: str, part: Path, host: str, hook, timeout: httpx.Timeout, limit: int) -> None:
+    with httpx.Client(headers={"User-Agent": UA}, follow_redirects=True, max_redirects=5, timeout=timeout,
+                      event_hooks={"request": [hook]}) as client, client.stream("GET", url) as r:
+        if r.status_code in (401, 403, 404, 410):
+            raise SourceExpired(f"{host} trả HTTP {r.status_code}: link video hết hạn hoặc sai chữ ký, gửi link mới qua /retry")
+        if r.status_code == 429 or r.status_code >= 500:
+            raise NetworkError(f"{host} trả HTTP {r.status_code}")
+        r.raise_for_status()
+        if int(r.headers.get("content-length") or 0) > limit:
+            raise InvalidInput(f"video lớn hơn {limit // (1024 * 1024)}MB")
+        size = 0
+        with open(part, "wb") as f:
+            for chunk in r.iter_bytes(1 << 16):
+                runctx.check()
+                size += len(chunk)
+                if size > limit:
+                    raise InvalidInput(f"video lớn hơn {limit // (1024 * 1024)}MB")
+                f.write(chunk)
+
+
 def download(url: str, dest: Path) -> Path:
     """Tải video (ghi ra .part rồi rename, nên file dở dang không bị dùng lại khi retry).
-    Check SSRF ở mọi hop redirect, giới hạn dung lượng, kill được qua runctx. Retry do scheduler lo."""
+    Check SSRF ở mọi hop redirect, giới hạn dung lượng, kill được qua runctx.
+    CDN TikTok (ít nhất tại VN) drop SYN ngẫu nhiên theo IP — một lần connect có thể timeout hoàn toàn trong khi
+    lần ngay sau đó vào được. TCP timeout mặc định của Windows ~21s nên chờ scheduler retry (backoff 5-45s) rất chậm:
+    retry nhanh ngay trong hàm với connect timeout ngắn, scheduler retry chỉ là lớp cuối."""
     from urllib.parse import urlsplit
 
     from .config import settings
@@ -44,27 +67,23 @@ def download(url: str, dest: Path) -> Path:
     hook = lambda req: check_public_url(str(req.url), settings.video_url_allowlist)
     timeout = httpx.Timeout(120, connect=settings.download_connect_timeout)
     part = dest.with_name(dest.name + ".part")
+    last_err: httpx.TransportError | None = None
     try:
-        with httpx.Client(headers={"User-Agent": UA}, follow_redirects=True, max_redirects=5, timeout=timeout,
-                          event_hooks={"request": [hook]}) as client, client.stream("GET", url) as r:
-            if r.status_code in (401, 403, 404, 410):
-                raise SourceExpired(f"{host} trả HTTP {r.status_code}: link video hết hạn hoặc sai chữ ký, gửi link mới qua /retry")
-            if r.status_code == 429 or r.status_code >= 500:
-                raise NetworkError(f"{host} trả HTTP {r.status_code}")
-            r.raise_for_status()
-            if int(r.headers.get("content-length") or 0) > limit:
-                raise InvalidInput(f"video lớn hơn {settings.max_video_mb}MB")
-            size = 0
-            with open(part, "wb") as f:
-                for chunk in r.iter_bytes(1 << 16):
+        for attempt in range(settings.download_attempts):
+            try:
+                _download_once(url, part, host, hook, timeout, limit)
+                break
+            except httpx.TransportError as e:
+                part.unlink(missing_ok=True)
+                last_err = e
+                if attempt + 1 < settings.download_attempts:
+                    import time as _time
+
                     runctx.check()
-                    size += len(chunk)
-                    if size > limit:
-                        raise InvalidInput(f"video lớn hơn {settings.max_video_mb}MB")
-                    f.write(chunk)
-    except httpx.TransportError as e:
-        part.unlink(missing_ok=True)
-        raise NetworkError(f"không kết nối được {host}: {e.__class__.__name__}: {e}") from e
+                    _time.sleep(1.5)
+        else:
+            raise NetworkError(f"không kết nối được {host} sau {settings.download_attempts} lần thử: "
+                               f"{last_err.__class__.__name__}: {last_err}") from last_err
     except ValueError as e:  # SSRF check của redirect
         part.unlink(missing_ok=True)
         raise InvalidInput(str(e)) from e
