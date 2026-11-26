@@ -4,6 +4,7 @@ import re
 import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
@@ -18,9 +19,10 @@ from .security import AuthError, authenticate, check_public_url, verify_file_pat
 logsetup.setup()
 log = logging.getLogger(__name__)
 
-PUBLIC_PATHS = {"/health", "/ready"}
+PUBLIC_PATHS = {"/health", "/ready", "/ui", "/"}
 FILE_RE = re.compile(r"^/files/([0-9a-f]{32})/([0-9A-Za-z_-]{1,64}\.mp4)$")
 JOB_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+DASHBOARD_HTML = Path(__file__).parent / "static" / "dashboard.html"
 
 
 @asynccontextmanager
@@ -200,6 +202,14 @@ async def get_file(job_id: str, name: str, exp: str | None = None, sig: str | No
 @app.get("/health")
 async def health():
     return {"ok": True}
+
+
+@app.get("/", include_in_schema=False)
+@app.get("/ui", include_in_schema=False)
+async def dashboard():
+    # Shell HTML/JS tĩnh, không chứa secret: người dùng nhập khoá client ở trình duyệt,
+    # mọi API call từ dashboard vẫn qua middleware ký HMAC như thường.
+    return FileResponse(DASHBOARD_HTML, media_type="text/html")
 
 
 def _ready_checks() -> dict[str, bool]:

@@ -504,9 +504,14 @@ class JobManager:
         return {"total": len(job.items), "finished": sum(c[s] for s in TERMINAL_ITEM_STATES), **c}
 
     def view(self, job: Job) -> Job:
-        v = job.model_copy()
+        v = job.model_copy(deep=True)
         v.progress = self.progress(job)
         v.queue_position = self.queue_position(job) if job.state in ("queued", "running") else None
+        # Ký lại link video mỗi lần xem: link ký lúc item xong hết hạn sau file_url_ttl_hours,
+        # dashboard cần link còn dùng được khi xem lại job cũ
+        for res in v.items:
+            if res.output_video_url and (out := self.outputs_dir / job.job_id / f"{res.smart_ad_id}.mp4").exists():
+                res.output_video_url = settings.public_base_url.rstrip("/") + sign_file_path(f"/files/{job.job_id}/{out.name}")
         return v
 
     # ---------------------------------------------------------------- webhook

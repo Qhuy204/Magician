@@ -101,3 +101,13 @@ tuỳ chọn XTTS-v2; mẫu từ chính vocal stem) → OmniVoice `duration` / a
 - `/files` cần `?exp=&sig=` (FILE_SIGNING_KEY). Mọi response `Cache-Control: private, no-store` (Cloudflare từng cache mp4 4h).
 - Test bảo mật end-to-end: `python data/test/security_test.py` (30 case, chạy qua domain public).
 - Docs đầy đủ cho người dùng API: `README.md`.
+
+## Dashboard web (`/ui`)
+- `app/static/dashboard.html`: single-file HTML+JS, serve ở `/` và `/ui` (public — shell tĩnh không chứa secret).
+- Browser ký HMAC bằng WebCrypto (sha256hex + HMAC-SHA256 hex, nonce 16 byte random). Secret lưu localStorage `mg_cid`/`mg_secret`.
+- Chữ ký phải khớp `security.body_signature` — test khớp bằng `D:/cache/tmp/sigtest.mjs` vs Python.
+- `crypto.getRandomValues` bắt buộc TypedArray, KHÔNG truyền ArrayBuffer (browser throw, harness Node bắt được).
+- Test render bằng harness DOM shim: `D:/cache/tmp/domtest.mjs` (render paths) + `domtest2.mjs` (deep render mọi item/job thật).
+- `GET /jobs` list entry KHÔNG có `items` — chỉ có `progress{total,finished,<state>}`; item đầy đủ ở `GET /jobs/{id}`.
+- Event ts là epoch float (không phải ISO), kind/message/data/smart_ad_id.
+- Harness render test giữ trong repo: `node scripts/dashboard_test.mjs` (cần service đang chạy + .env có API_KEYS).

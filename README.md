@@ -183,8 +183,18 @@ Header `X-API-Key: <secret>`. Đơn giản hơn nhưng không chống được r
 | GET | `/metrics` | ✓ hoặc localhost | Prometheus text format |
 | GET | `/ready` | – | `200 {"ready":true}` / `503 {"ready":false}` (DB, ffmpeg, scheduler, worker TTS, đĩa) |
 | GET | `/health` | – | `{"ok": true}` (process còn sống) |
+| GET | `/ui` | – | Dashboard web quản lý job (shell tĩnh, không chứa secret) |
 
 `/docs` và `/openapi.json` tắt mặc định (`ENABLE_DOCS=true` để bật).
+
+### Dashboard web (`/ui`)
+
+Giao diện quản lý job tại `/ui` (hoặc `/`), public qua tunnel. Trang HTML tĩnh — không chứa secret; người dùng nhập `client_id` + secret một lần, trình duyệt lưu trong localStorage và **tự ký HMAC** cho mọi request bằng WebCrypto (cùng scheme `ts/nonce/method/path/sha256(body)` như client thường), không qua proxy trung gian nào.
+
+- Danh sách job lọc theo trạng thái, tiến độ từng job, tự làm mới (5s khi có job chạy, 15s khi rảnh; trong giới hạn rate limit 60 req/phút).
+- Chi tiết job: item card theo state, pipeline stepper trực tiếp cho item đang chạy, video kết quả phát ngay trong trang (link `/files` đã ký sẵn trong `output_video_url`), voice-over gốc → viết lại, sửa hình, policy findings, việc cần làm ngoài video, targeting fix, compliance check, caption mới, landing page, timings, nhật ký sự kiện.
+- Thao tác: retry (kèm link video mới / ad_text / landing_page_url / force), cancel, tạo job mới bằng cách dán JSON review.
+- Chỉ thấy job của client đã đăng nhập (cùng cách API lọc theo `client_id`).
 
 ### POST /jobs
 

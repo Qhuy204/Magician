@@ -1,0 +1,560 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Magician — Bảng điều khiển</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#120e1a; --surface:#1b1428; --raised:#231a33; --border:#342a4b; --border-soft:#2a2140;
+  --ink:#ece7f7; --muted:#9d93bb; --faint:#6e648c;
+  --accent:#a78bfa; --accent-deep:#7c3aed; --accent-soft:rgba(167,139,250,.13);
+  --done:#4ade80; --partial:#fbbf24; --review:#fb923c; --fail:#f87171; --run:#7dd3fc; --idle:#8b83a3;
+  --mono:'JetBrains Mono',ui-monospace,monospace;
+  --sans:'Be Vietnam Pro',system-ui,sans-serif;
+  --r:10px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{font-size:15px}
+body{background:var(--bg);color:var(--ink);font-family:var(--sans);min-height:100vh;
+  background-image:radial-gradient(1100px 500px at 85% -10%,rgba(124,58,237,.14),transparent 60%),radial-gradient(800px 400px at -10% 110%,rgba(124,58,237,.08),transparent 60%)}
+button{font-family:inherit;cursor:pointer}
+input,select,textarea{font-family:inherit;color:var(--ink)}
+a{color:var(--accent)}
+.mono{font-family:var(--mono)}
+
+/* ---------- login ---------- */
+.login-wrap{min-height:100vh;display:grid;place-items:center;padding:24px}
+.login-card{width:100%;max-width:400px;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:34px 30px}
+.login-card h1{font-size:1.5rem;font-weight:700;letter-spacing:-.02em;margin-bottom:4px}
+.login-card h1 .wand{color:var(--accent)}
+.login-card p.sub{color:var(--muted);font-size:.85rem;margin-bottom:24px;line-height:1.5}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:.78rem;font-weight:600;color:var(--muted);margin-bottom:6px;text-transform:uppercase;letter-spacing:.06em}
+.field input{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px;font-size:.92rem;outline:none;transition:border-color .15s}
+.field input:focus{border-color:var(--accent)}
+.btn{display:inline-flex;align-items:center;gap:7px;border:none;border-radius:8px;padding:10px 16px;font-size:.88rem;font-weight:600;transition:all .15s}
+.btn-primary{background:var(--accent-deep);color:#fff;width:100%;justify-content:center}
+.btn-primary:hover{background:#8b5cf6}
+.btn-ghost{background:transparent;border:1px solid var(--border);color:var(--muted)}
+.btn-ghost:hover{border-color:var(--accent);color:var(--ink)}
+.btn-danger{background:transparent;border:1px solid rgba(248,113,113,.4);color:var(--fail)}
+.btn-danger:hover{background:rgba(248,113,113,.1)}
+.btn-sm{padding:6px 12px;font-size:.8rem}
+.login-err{color:var(--fail);font-size:.82rem;margin-top:10px;min-height:1.2em}
+.login-note{margin-top:16px;font-size:.76rem;color:var(--faint);line-height:1.55;border-top:1px solid var(--border-soft);padding-top:14px}
+
+/* ---------- shell ---------- */
+.shell{display:none;flex-direction:column;height:100vh}
+.shell.on{display:flex}
+header{display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:1px solid var(--border-soft);background:rgba(27,20,40,.7);backdrop-filter:blur(8px);flex-wrap:wrap}
+.brand{font-size:1.05rem;font-weight:700;letter-spacing:-.02em;white-space:nowrap}
+.brand .wand{color:var(--accent)}
+.status-strip{display:flex;gap:8px;flex-wrap:wrap;flex:1}
+.stat{display:flex;align-items:center;gap:6px;background:var(--raised);border:1px solid var(--border-soft);border-radius:999px;padding:4px 11px;font-size:.76rem;color:var(--muted)}
+.stat b{color:var(--ink);font-weight:600;font-family:var(--mono);font-size:.78rem}
+.stat .dot{width:7px;height:7px;border-radius:50%}
+.dot-ok{background:var(--done)} .dot-warn{background:var(--partial)} .dot-bad{background:var(--fail)}
+.hdr-actions{display:flex;gap:8px;align-items:center}
+.toggle{display:flex;align-items:center;gap:7px;font-size:.78rem;color:var(--muted);cursor:pointer;user-select:none}
+.toggle input{accent-color:var(--accent)}
+
+main{flex:1;display:grid;grid-template-columns:340px 1fr;min-height:0}
+
+/* ---------- job list ---------- */
+.jobs-pane{border-right:1px solid var(--border-soft);display:flex;flex-direction:column;min-height:0}
+.jobs-toolbar{padding:12px 14px 8px;display:flex;flex-direction:column;gap:9px}
+.jobs-toolbar h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:600}
+.filters{display:flex;gap:6px;flex-wrap:wrap}
+.fchip{background:transparent;border:1px solid var(--border);color:var(--muted);border-radius:999px;padding:4px 11px;font-size:.75rem;font-weight:500}
+.fchip.on{background:var(--accent-soft);border-color:var(--accent);color:var(--accent)}
+.jobs-list{flex:1;overflow-y:auto;padding:4px 10px 14px}
+.job-row{border:1px solid transparent;border-radius:var(--r);padding:10px 12px;margin-bottom:6px;cursor:pointer;transition:background .12s}
+.job-row:hover{background:var(--raised)}
+.job-row.sel{background:var(--raised);border-color:var(--accent)}
+.job-row .rline1{display:flex;align-items:center;gap:8px;margin-bottom:5px}
+.job-row .jname{font-size:.86rem;font-weight:600;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.job-row .jmeta{font-size:.74rem;color:var(--faint);display:flex;justify-content:space-between;font-family:var(--mono)}
+.pbar{height:4px;background:var(--bg);border-radius:99px;margin-top:7px;overflow:hidden}
+.pbar i{display:block;height:100%;background:var(--accent-deep);border-radius:99px;transition:width .4s}
+.empty{color:var(--faint);font-size:.85rem;text-align:center;padding:38px 16px;line-height:1.6}
+
+/* ---------- detail ---------- */
+.detail{overflow-y:auto;padding:18px 22px 60px;min-height:0}
+.detail-empty{display:grid;place-items:center;height:100%;color:var(--faint);font-size:.9rem;text-align:center;line-height:1.7}
+.dhead{display:flex;align-items:flex-start;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+.dhead .dtitle{flex:1;min-width:240px}
+.dhead h2{font-size:1.15rem;font-weight:700;letter-spacing:-.01em;margin-bottom:4px}
+.dhead .dsub{font-size:.78rem;color:var(--muted);font-family:var(--mono)}
+.dactions{display:flex;gap:8px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;gap:6px;border-radius:999px;padding:3px 11px;font-size:.74rem;font-weight:600;letter-spacing:.01em;white-space:nowrap}
+.chip::before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor}
+.chip.state-done{background:rgba(74,222,128,.12);color:var(--done)}
+.chip.state-partial{background:rgba(251,191,36,.12);color:var(--partial)}
+.chip.state-needs_review{background:rgba(251,146,60,.13);color:var(--review)}
+.chip.state-failed,.chip.state-unfixable{background:rgba(248,113,113,.12);color:var(--fail)}
+.chip.state-running{background:rgba(125,211,252,.12);color:var(--run)}
+.chip.state-running::before,.chip.state-retrying::before{animation:pulse 1.1s infinite}
+.chip.state-retrying{background:rgba(125,211,252,.09);color:var(--run)}
+.chip.state-pending,.chip.state-queued{background:rgba(139,131,163,.14);color:var(--idle)}
+.chip.state-cancelled,.chip.state-no_changes,.chip.state-skipped{background:rgba(107,100,128,.14);color:var(--faint)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+
+.section{background:var(--surface);border:1px solid var(--border-soft);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+.section h3{font-size:.8rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);font-weight:600;margin-bottom:10px}
+
+/* item card */
+.item{border:1px solid var(--border-soft);border-radius:12px;background:var(--surface);margin-bottom:12px;overflow:hidden}
+.item-head{display:flex;align-items:center;gap:10px;padding:12px 16px;cursor:pointer;flex-wrap:wrap}
+.item-head:hover{background:rgba(35,26,51,.5)}
+.item-head .iname{font-weight:600;font-size:.9rem}
+.item-head .iid{font-family:var(--mono);font-size:.72rem;color:var(--faint)}
+.item-head .spacer{flex:1}
+.item-head .chev{color:var(--faint);transition:transform .15s;font-size:.8rem}
+.item.open .chev{transform:rotate(90deg)}
+.item-body{display:none;border-top:1px solid var(--border-soft);padding:14px 16px}
+.item.open .item-body{display:block}
+
+/* pipeline stepper */
+.stepper{display:flex;align-items:center;gap:0;margin:4px 0 2px;flex-wrap:wrap}
+.step{display:flex;align-items:center;gap:5px;font-size:.72rem;color:var(--faint)}
+.step .sdot{width:8px;height:8px;border-radius:50%;background:var(--border);flex-shrink:0}
+.step.done{color:var(--muted)} .step.done .sdot{background:var(--done)}
+.step.now{color:var(--run);font-weight:600} .step.now .sdot{background:var(--run);animation:pulse 1.1s infinite}
+.step .conn{width:14px;height:1px;background:var(--border);margin:0 5px}
+.step.done .conn{background:var(--done)}
+
+.kv{display:grid;grid-template-columns:130px 1fr;gap:5px 14px;font-size:.83rem;margin-bottom:10px}
+.kv dt{color:var(--muted)} .kv dd{font-family:var(--mono);font-size:.8rem;word-break:break-all}
+.err-box{background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.3);border-radius:8px;padding:9px 12px;font-size:.82rem;margin:8px 0;line-height:1.5}
+.err-box b{color:var(--fail)}
+
+table.tbl{width:100%;border-collapse:collapse;font-size:.8rem}
+.tbl th{text-align:left;color:var(--muted);font-weight:600;font-size:.72rem;text-transform:uppercase;letter-spacing:.05em;padding:6px 8px;border-bottom:1px solid var(--border)}
+.tbl td{padding:6px 8px;border-bottom:1px solid var(--border-soft);vertical-align:top;line-height:1.45}
+.tbl tr:last-child td{border-bottom:none}
+.v-fixed{color:var(--done);font-weight:600}.v-out{color:var(--partial);font-weight:600}.v-unfix{color:var(--fail);font-weight:600}.v-nf{color:var(--faint)}
+
+video{width:100%;max-width:340px;border-radius:10px;border:1px solid var(--border);background:#000;display:block}
+.vid-row{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+.vid-col{display:flex;flex-direction:column;gap:7px}
+.vid-col .vcap{font-size:.76rem;color:var(--muted);font-weight:600}
+.dl-link{font-size:.78rem;font-family:var(--mono)}
+
+.edit-pair{background:var(--bg);border-radius:8px;padding:9px 12px;margin-bottom:8px;font-size:.83rem;line-height:1.5}
+.edit-pair .old{color:var(--fail);text-decoration:line-through;opacity:.75}
+.edit-pair .new{color:var(--done)}
+.edit-pair .etime{font-family:var(--mono);font-size:.72rem;color:var(--faint);margin-right:8px}
+
+.events{max-height:300px;overflow-y:auto}
+.ev{display:flex;gap:10px;font-size:.79rem;padding:5px 0;border-bottom:1px solid var(--border-soft);line-height:1.45}
+.ev:last-child{border-bottom:none}
+.ev .ets{font-family:var(--mono);color:var(--faint);font-size:.72rem;white-space:nowrap;padding-top:1px}
+.ev .etype{font-family:var(--mono);color:var(--accent);font-size:.72rem;white-space:nowrap;padding-top:1px;min-width:110px}
+
+/* modal */
+.overlay{position:fixed;inset:0;background:rgba(10,7,16,.72);display:none;place-items:center;z-index:40;padding:20px;backdrop-filter:blur(3px)}
+.overlay.on{display:grid}
+.modal{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:22px;width:100%;max-width:520px;max-height:88vh;overflow-y:auto}
+.modal h3{font-size:1rem;margin-bottom:14px}
+.modal textarea{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;font-size:.8rem;font-family:var(--mono);min-height:120px;resize:vertical;outline:none}
+.modal textarea:focus{border-color:var(--accent)}
+.modal .row{margin-bottom:12px}
+.modal .row label{display:block;font-size:.78rem;color:var(--muted);margin-bottom:5px;font-weight:600}
+.modal input[type=text]{width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 11px;font-size:.85rem;outline:none}
+.modal input[type=text]:focus{border-color:var(--accent)}
+.modal .mrow{display:flex;gap:10px;justify-content:flex-end;margin-top:16px}
+.checkline{display:flex;align-items:center;gap:8px;font-size:.85rem}
+.checkline input{accent-color:var(--accent)}
+
+.toast{position:fixed;bottom:22px;right:22px;background:var(--raised);border:1px solid var(--border);border-radius:10px;padding:12px 18px;font-size:.85rem;z-index:60;display:none;max-width:380px;line-height:1.5}
+.toast.err{border-color:var(--fail);color:var(--fail)}
+.toast.ok{border-color:var(--done);color:var(--done)}
+
+@media(max-width:900px){
+  main{grid-template-columns:1fr}
+  .jobs-pane{border-right:none;border-bottom:1px solid var(--border-soft);max-height:44vh}
+  .detail{padding:14px 14px 50px}
+}
+</style>
+</head>
+<body>
+
+<!-- ================= LOGIN ================= -->
+<div class="login-wrap" id="loginView">
+  <div class="login-card">
+    <h1>Magician <span class="wand">✦</span></h1>
+    <p class="sub">Bảng điều khiển sửa video quảng cáo bị từ chối. Đăng nhập bằng khoá API của client.</p>
+    <div class="field"><label>Client ID</label><input id="inCid" autocomplete="username" spellcheck="false"></div>
+    <div class="field"><label>Secret</label><input id="inSecret" type="password" autocomplete="current-password" spellcheck="false"></div>
+    <button class="btn btn-primary" id="btnLogin">Vào bảng điều khiển</button>
+    <div class="login-err" id="loginErr"></div>
+    <div class="login-note">Khoá được lưu trong trình duyệt (localStorage) và chỉ dùng để ký request HMAC gửi thẳng tới server — không qua trung gian nào. Bạn chỉ thấy job của client này.</div>
+  </div>
+</div>
+
+<!-- ================= SHELL ================= -->
+<div class="shell" id="shell">
+  <header>
+    <div class="brand">Magician <span class="wand">✦</span></div>
+    <div class="status-strip" id="statusStrip"></div>
+    <div class="hdr-actions">
+      <label class="toggle"><input type="checkbox" id="autoRefresh" checked> Tự làm mới</label>
+      <button class="btn btn-ghost btn-sm" id="btnNewJob">+ Job mới</button>
+      <button class="btn btn-ghost btn-sm" id="btnLogout">Thoát</button>
+    </div>
+  </header>
+  <main>
+    <div class="jobs-pane">
+      <div class="jobs-toolbar">
+        <h2>Jobs</h2>
+        <div class="filters" id="filters"></div>
+      </div>
+      <div class="jobs-list" id="jobsList"></div>
+    </div>
+    <div class="detail" id="detail"><div class="detail-empty">Chọn một job ở cột trái<br>hoặc tạo job mới để bắt đầu.</div></div>
+  </main>
+</div>
+
+<!-- retry modal -->
+<div class="overlay" id="retryModal">
+  <div class="modal">
+    <h3>Chạy lại job</h3>
+    <div class="row checkline"><input type="checkbox" id="retryForce"><label for="retryForce">Chạy lại cả item đã xong (force)</label></div>
+    <div class="row"><label>Link video mới (nếu link gốc hết hạn) — JSON: {"smart_ad_id": "url"}</label><textarea id="retryUrls" placeholder='{"7384920111222333444": "https://..."}' style="min-height:70px"></textarea></div>
+    <div class="row"><label>Caption gốc (ad_text) — để viết lại cho đúng policy</label><input type="text" id="retryAdText"></div>
+    <div class="row"><label>Landing page URL — để kiểm tra trang đích</label><input type="text" id="retryLanding"></div>
+    <div class="mrow">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('retryModal')">Huỷ</button>
+      <button class="btn btn-primary btn-sm" style="width:auto" id="btnDoRetry">Chạy lại</button>
+    </div>
+  </div>
+</div>
+
+<!-- new job modal -->
+<div class="overlay" id="newJobModal">
+  <div class="modal">
+    <h3>Tạo job mới</h3>
+    <div class="row"><label>JSON review từ TikTok / dashboard</label><textarea id="newJobJson" placeholder='{"items": [...]}'></textarea></div>
+    <div class="row"><label>Callback URL (tuỳ chọn)</label><input type="text" id="newJobCallback"></div>
+    <div class="mrow">
+      <button class="btn btn-ghost btn-sm" onclick="closeModal('newJobModal')">Huỷ</button>
+      <button class="btn btn-primary btn-sm" style="width:auto" id="btnDoNewJob">Gửi job</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+/* ============ crypto / signing ============ */
+const te = new TextEncoder();
+const hex = buf => [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+async function sha256hex(data){ return hex(await crypto.subtle.digest('SHA-256', data)); }
+async function hmac(secret, msg){
+  const key = await crypto.subtle.importKey('raw', te.encode(secret), {name:'HMAC',hash:'SHA-256'}, false, ['sign']);
+  return hex(await crypto.subtle.sign('HMAC', key, te.encode(msg)));
+}
+function nonce(){
+  return hex(crypto.getRandomValues(new Uint8Array(16)));
+}
+
+/* ============ auth store ============ */
+const store = {
+  get cid(){ return localStorage.getItem('mg_cid')||''; },
+  get secret(){ return localStorage.getItem('mg_secret')||''; },
+  save(c,s){ localStorage.setItem('mg_cid',c); localStorage.setItem('mg_secret',s); },
+  clear(){ localStorage.removeItem('mg_cid'); localStorage.removeItem('mg_secret'); }
+};
+
+/* ============ api ============ */
+async function api(method, pathQs, bodyObj){
+  const body = bodyObj===undefined ? '' : JSON.stringify(bodyObj);
+  const ts = Math.floor(Date.now()/1000).toString();
+  const nn = nonce();
+  const digest = await sha256hex(te.encode(body));
+  const sig = await hmac(store.secret, [ts,nn,method.toUpperCase(),pathQs,digest].join('\n'));
+  const res = await fetch(pathQs, {
+    method,
+    headers:{'X-Client-Id':store.cid,'X-Timestamp':ts,'X-Nonce':nn,'X-Signature':sig,
+      ...(bodyObj!==undefined?{'Content-Type':'application/json'}:{})},
+    body: bodyObj!==undefined ? body : undefined
+  });
+  if(res.status===401){ throw Object.assign(new Error('Khoá không hợp lệ hoặc hết hạn — kiểm tra lại Client ID/Secret.'),{auth:true}); }
+  if(res.status===429){ throw new Error('Server đang giới hạn tốc độ — thử lại sau vài giây.'); }
+  if(!res.ok){
+    let msg='Lỗi '+res.status;
+    try{ msg=(await res.json()).detail||msg; }catch(e){}
+    throw Object.assign(new Error(msg),{status:res.status});
+  }
+  return res.status===204 ? null : res.json();
+}
+
+/* ============ helpers ============ */
+const $ = s=>document.querySelector(s);
+const esc = s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function toast(msg, kind){ const t=$('#toast'); t.textContent=msg; t.className='toast '+(kind||''); t.style.display='block'; clearTimeout(t._x); t._x=setTimeout(()=>t.style.display='none',4200); }
+function closeModal(id){ document.getElementById(id).classList.remove('on'); }
+function asDate(v){ if(!v) return null; return (typeof v==='number') ? new Date(v*1000) : new Date(v); }
+function fmtTime(iso){ const d=asDate(iso); if(!d) return '—'; return d.toLocaleString('vi-VN',{hour12:false,day:'2-digit',month:'2-digit',hour:'2-digit',minute:'2-digit'}); }
+function fmtAgo(iso){ const d=asDate(iso); if(!d) return ''; const s=(Date.now()-d)/1000;
+  if(s<60) return Math.floor(s)+'s trước'; if(s<3600) return Math.floor(s/60)+'p trước'; if(s<86400) return Math.floor(s/3600)+'h trước'; return Math.floor(s/86400)+' ngày trước'; }
+function fmtDur(a,b){ if(!a||!b) return '—'; const s=(new Date(b)-new Date(a))/1000; return s<60? s.toFixed(0)+'s' : Math.floor(s/60)+'m'+Math.floor(s%60)+'s'; }
+
+const STATE_LABEL={done:'Xong',partial:'Xong — còn việc ngoài',needs_review:'Cần xem lại',no_changes:'Không sửa được',
+  failed:'Lỗi',running:'Đang chạy',retrying:'Chờ chạy lại',pending:'Chờ',queued:'Xếp hàng',cancelled:'Đã huỷ',skipped:'Bỏ qua',unfixable:'Không sửa được'};
+const ERR_LABEL={unfixable:'Sản phẩm vi phạm bản chất',source_expired:'Link video hết hạn',invalid_input:'Input không hợp lệ',
+  network:'Lỗi mạng',upstream_rate_limit:'OpenAI quá tải',stage_timeout:'Quá giờ xử lý',needs_review:'Cần người xem lại',
+  outside_video:'Vi phạm ngoài video',worker_crash:'Worker TTS chết',gpu_oom:'Hết VRAM',download_failed:'Không tải được video'};
+const STAGE_LABEL={download:'Tải video',separate:'Tách audio',transcribe:'Nhận lời',ocr:'Đọc chữ',triage:'Phân loại',plan:'Lập kế hoạch',
+  rewrite:'Viết lại',tts:'Clone giọng',render:'Render',recheck:'Kiểm tra lại',done:'Xong'};
+const STAGE_ORDER=['download','separate','transcribe','ocr','triage','plan','rewrite','tts','render','recheck'];
+const ACTION_LABEL={targeting:'Targeting',certificate:'Giấy phép / chứng nhận',landing_page:'Landing page',ad_text:'Caption',
+  rights:'Quyền sử dụng',aigc_label:'Nhãn AI',new_creative:'Creative mới',review:'Xem lại thủ công',account:'Tài khoản',music:'Nhạc nền'};
+const VERDICT_LABEL={fixed_in_video:'Đã sửa trong video',outside_video:'Việc ngoài video',unfixable:'Không sửa được',not_found:'Không thấy trong video'};
+
+function stateChip(st){ return `<span class="chip state-${esc(st)}">${esc(STATE_LABEL[st]||st)}</span>`; }
+
+/* ============ app state ============ */
+let jobs=[], selJob=null, selDetail=null, selEvents=[], filter='all', timer=null, openItems=new Set();
+
+/* ============ login ============ */
+async function tryLogin(){
+  const cid=$('#inCid').value.trim(), sec=$('#inSecret').value.trim();
+  if(!cid||!sec){ $('#loginErr').textContent='Nhập đủ Client ID và Secret.'; return; }
+  store.save(cid,sec);
+  try{ await api('GET','/status'); enterShell(); }
+  catch(e){ $('#loginErr').textContent=e.message; if(e.auth) store.clear(); }
+}
+function enterShell(){
+  $('#loginView').style.display='none'; $('#shell').classList.add('on');
+  refreshAll(); restartTimer();
+}
+function logout(){ store.clear(); location.reload(); }
+
+/* ============ polling ============ */
+function restartTimer(){
+  clearTimeout(timer);
+  if(!$('#autoRefresh').checked) return;
+  const active = jobs.some(j=>j.state==='running'||j.state==='queued');
+  timer=setTimeout(async()=>{ if(!document.hidden) await refreshAll(true); restartTimer(); }, active?5000:15000);
+}
+async function refreshAll(quiet){
+  try{
+    const [st, list] = await Promise.all([api('GET','/status'), api('GET','/jobs?limit=50')]);
+    renderStatus(st);
+    jobs = list.jobs||list||[];
+    renderJobs();
+    if(selJob){ await loadDetail(selJob, true); }
+  }catch(e){ if(!quiet) toast(e.message,'err'); if(e.auth) logout(); }
+}
+async function loadDetail(id, keepOpen){
+  try{
+    const [d, ev] = await Promise.all([api('GET','/jobs/'+id), api('GET','/jobs/'+id+'/events?limit=80')]);
+    selDetail=d; selEvents=(ev&&ev.events)||ev||[];
+    renderDetail();
+  }catch(e){ if(e.status===404){ selDetail=null; selJob=null; renderDetail(); } }
+}
+
+/* ============ render: status ============ */
+function renderStatus(st){
+  const sc=st.scheduler||{}, tts=st.tts_pool||{}, hw=st.hardware||{};
+  const nWorkers=(tts.workers||[]).length, nAlive=(tts.workers||[]).filter(w=>w.alive).length;
+  const gpu=(hw.gpu_names&&hw.gpu_names[0])||'CPU';
+  const vram=(hw.vram_free_gb&&hw.vram_free_gb[0]!=null)? ' · '+hw.vram_free_gb[0].toFixed(1)+'G VRAM' : '';
+  const errs=Object.entries(sc.errors_last_hour||{});
+  const errHtml=errs.length? `<span class="stat" style="color:var(--fail)">Lỗi 1h: ${errs.map(([k,v])=>esc(k)+'×'+v).join(' ')}</span>`:'';
+  const paused = sc.paused? `<span class="stat"><span class="dot dot-bad"></span>Tạm ngưng nhận job</span>`:'';
+  $('#statusStrip').innerHTML = `
+    <span class="stat"><span class="dot dot-ok"></span>Server<b>hoạt động</b></span>
+    <span class="stat">Đang chạy <b>${sc.running??0}</b> · chờ <b>${sc.pending??0}</b></span>
+    <span class="stat">TTS <b>${nAlive}/${nWorkers}</b> ${esc(tts.engine||'')}</span>
+    <span class="stat mono">${esc(gpu)}${esc(vram)}</span>${paused}${errHtml}`;
+}
+
+/* ============ render: job list ============ */
+const FILTERS=[['all','Tất cả'],['active','Đang chạy'],['attention','Cần xử lý'],['done','Xong']];
+function matchFilter(j){
+  if(filter==='all') return true;
+  if(filter==='active') return j.state==='running'||j.state==='queued';
+  if(filter==='done') return j.state==='done';
+  // attention: job failed hoặc có item cần người xử lý
+  if(j.state==='failed') return true;
+  const p=j.progress||{};
+  return !!(p.failed||p.needs_review||p.no_changes||p.unfixable||p.partial);
+}
+function renderJobs(){
+  $('#filters').innerHTML = FILTERS.map(([k,l])=>`<button class="fchip ${filter===k?'on':''}" data-f="${k}">${l}</button>`).join('');
+  document.querySelectorAll('.fchip').forEach(b=>b.onclick=()=>{filter=b.dataset.f;renderJobs();});
+  const list = jobs.filter(matchFilter);
+  if(!list.length){ $('#jobsList').innerHTML='<div class="empty">Chưa có job nào.<br>Gửi JSON review từ dashboard TikTok để bắt đầu.</div>'; return; }
+  $('#jobsList').innerHTML = list.map(j=>{
+    const p=j.progress||{}; const tot=p.total||0, fin=p.finished||0;
+    const pct=tot? Math.round(fin/tot*100):0;
+    const attn=(p.failed||p.needs_review||p.no_changes||p.partial)? `<span style="color:var(--partial);font-weight:600">· cần xử lý</span>`:'';
+    const name=j.campaign_name||j.job_id.slice(0,8);
+    return `<div class="job-row ${selJob===j.job_id?'sel':''}" data-id="${j.job_id}">
+      <div class="rline1"><span class="jname">${esc(name)}</span>${stateChip(j.state)}</div>
+      <div class="jmeta"><span>${fin}/${tot} item${attn}</span><span>${fmtAgo(j.created_at)}</span></div>
+      <div class="pbar"><i style="width:${pct}%"></i></div>
+    </div>`;
+  }).join('');
+  document.querySelectorAll('.job-row').forEach(r=>r.onclick=()=>{ selJob=r.dataset.id; renderJobs(); loadDetail(selJob); });
+}
+
+/* ============ render: detail ============ */
+function stepper(item){
+  const cur=(item.stage||'').toLowerCase();
+  const idx=STAGE_ORDER.indexOf(cur);
+  const doneAll=['done','partial','needs_review'].includes(item.state);
+  return `<div class="stepper">`+STAGE_ORDER.map((s,i)=>{
+    const cls=doneAll||i<idx?'done':(i===idx&&item.state==='running'?'now':'');
+    return `${i?`<span class="conn" style="width:14px;height:1px;background:${doneAll||i<=idx?'var(--done)':'var(--border)'};margin:0 5px"></span>`:''}<span class="step ${cls}"><span class="sdot"></span>${STAGE_LABEL[s]}</span>`;
+  }).join('')+`</div>`;
+}
+
+function itemCard(it){
+  const open=openItems.has(it.smart_ad_id);
+  const errs=[];
+  if(it.error) errs.push(`<div class="err-box"><b>${esc(ERR_LABEL[it.error_code]||it.error_code||'Lỗi')}:</b> ${esc(it.error)}</div>`);
+  if(it.retryable&&it.next_retry_at) errs.push(`<div style="font-size:.78rem;color:var(--muted)">Tự chạy lại lúc ${fmtTime(it.next_retry_at)} (lần ${it.attempt})</div>`);
+  const vids=[];
+  if(it.output_video_url) vids.push(`<div class="vid-col"><span class="vcap">Video kết quả</span><video controls preload="metadata" src="${esc(it.output_video_url)}"></video><a class="dl-link" href="${esc(it.output_video_url)}" download>tải xuống mp4</a></div>`);
+
+  const findings=(it.policy_findings||[]).map(f=>`<tr><td>${esc(f.group||'')}${f.subgroup?' · '+esc(f.subgroup):''}</td><td class="${f.verdict==='fixed_in_video'?'v-fixed':f.verdict==='outside_video'?'v-out':f.verdict==='unfixable'?'v-unfix':'v-nf'}">${esc(VERDICT_LABEL[f.verdict]||f.verdict||'')}</td><td>${esc((f.actions_applied||[]).join(', ')||'—')}</td></tr>`).join('');
+  const actions=(it.action_required||[]).map(a=>`<tr><td><b>${esc(ACTION_LABEL[a.type]||a.type)}</b></td><td>${esc(a.detail||'')}</td></tr>`).join('');
+  const cc=it.compliance_check;
+  const tf=it.targeting_fix;
+  const at=it.ad_text_fix;
+  const lp=it.landing_page;
+  const edits=(it.edits||[]).map(e=>`<div class="edit-pair"><span class="etime">${(e.start??0).toFixed(1)}–${(e.end??0).toFixed(1)}s</span><div class="old">${esc(e.original_text||e.original||'')}</div><div class="new">${esc(e.new_text||'')}</div></div>`).join('');
+  const vedits=(it.visual_edits||[]).map(v=>`<tr><td class="mono" style="font-size:.72rem">${esc(v.type||'')}${v.method?'/'+esc(v.method):''}</td><td>${esc(v.what||v.description||v.text_new||'')}</td><td class="mono" style="font-size:.72rem">${v.start!=null?(+v.start).toFixed(1)+'–'+(+v.end).toFixed(1)+'s':''}</td></tr>`).join('');
+  const timings=Object.entries(it.timings||{}).map(([k,v])=>`<div>${esc(k)}</div><div>${(+v).toFixed(1)}s</div>`).join('');
+
+  return `<div class="item ${open?'open':''}" data-aid="${esc(it.smart_ad_id)}">
+    <div class="item-head">
+      ${stateChip(it.state)}
+      <span class="iname">${esc(it.smart_ad_name||it.smart_ad_id)}</span>
+      <span class="iid">${esc(it.smart_ad_id)}</span>
+      ${it.language?`<span class="chip state-pending" style="text-transform:uppercase">${esc(it.language)}</span>`:''}
+      <span class="spacer"></span>
+      ${it.state==='running'?`<span class="chip state-running">${esc(STAGE_LABEL[it.stage]||it.stage||'…')}</span>`:''}
+      <span class="chev">▶</span>
+    </div>
+    <div class="item-body">
+      ${(it.state==='running')?stepper(it):''}
+      ${errs.join('')}
+      ${vids.length?`<div class="section" style="background:transparent;border:none;padding:4px 0"><div class="vid-row">${vids.join('')}</div></div>`:''}
+      ${findings?`<div class="section"><h3>Vi phạm policy</h3><table class="tbl"><tr><th>Nhóm</th><th>Kết quả</th><th>Đã làm</th></tr>${findings}</table></div>`:''}
+      ${actions?`<div class="section"><h3>Việc cần làm ngoài video</h3><table class="tbl">${actions}</table></div>`:''}
+      ${tf?`<div class="section"><h3>Gợi ý targeting</h3><div class="kv" style="grid-template-columns:170px 1fr">
+        ${tf.exclude_regions?.length?`<div>Loại khu vực</div><div>${esc(tf.exclude_regions.join(', '))}</div>`:''}
+        ${tf.exclude_placements?.length?`<div>Loại placement</div><div>${esc(tf.exclude_placements.join(', '))}</div>`:''}
+        ${tf.min_age?`<div>Độ tuổi tối thiểu</div><div>${tf.min_age}+</div>`:''}
+        ${tf.why?`<div>Lý do</div><div style="font-family:var(--sans)">${esc(tf.why)}</div>`:''}
+      </div></div>`:''}
+      ${cc?`<div class="section"><h3>Kiểm tra lại sau sửa</h3>
+        <div style="font-size:.83rem;margin-bottom:6px">${cc.passed?'<span style="color:var(--done);font-weight:600">✓ Đạt</span>':'<span style="color:var(--review);font-weight:600">Còn vấn đề</span>'} sau ${cc.passes||1} lượt</div>
+        ${(cc.issues||[]).map(i=>`<div style="font-size:.8rem;color:var(--muted);padding:2px 0">• ${esc(i)}</div>`).join('')}
+      </div>`:''}
+      ${at&&at.changed?`<div class="section"><h3>Caption viết lại</h3>
+        <div class="edit-pair"><div class="old">${esc(at.original||'')}</div><div class="new">${esc(at.new||'')}</div></div>
+        ${at.notes?`<div style="font-size:.78rem;color:var(--muted)">${esc(at.notes)}</div>`:''}
+      </div>`:''}
+      ${lp?`<div class="section"><h3>Landing page</h3>
+        <div class="kv" style="grid-template-columns:110px 1fr"><div>URL</div><div><a href="${esc(lp.final_url||lp.url)}" target="_blank" rel="noopener">${esc(lp.url||'')}</a></div>
+        <div>Trạng thái</div><div>${lp.ok?'<span style="color:var(--done)">OK</span>':'<span style="color:var(--fail)">Có vấn đề</span>'} (${lp.status||'?'})</div></div>
+        ${(lp.issues||[]).map(i=>`<div style="font-size:.8rem;color:var(--review);padding:2px 0">• ${esc(i)}</div>`).join('')}
+      </div>`:''}
+      ${edits?`<div class="section"><h3>Voice-over đã viết lại</h3>${edits}</div>`:''}
+      ${vedits?`<div class="section"><h3>Sửa hình ảnh</h3><table class="tbl"><tr><th>Loại</th><th>Nội dung</th><th>Thời điểm</th></tr>${vedits}</table></div>`:''}
+      ${timings?`<div class="section"><h3>Thời gian từng bước</h3><div class="kv" style="grid-template-columns:110px 1fr">${timings}</div></div>`:''}
+    </div>
+  </div>`;
+}
+
+function renderDetail(){
+  const el=$('#detail');
+  if(!selDetail){ el.innerHTML='<div class="detail-empty">Chọn một job ở cột trái<br>hoặc tạo job mới để bắt đầu.</div>'; return; }
+  const j=selDetail;
+  const items=j.items||[];
+  const name=j.campaign_name||'';
+  const canRetry=['done','failed','cancelled'].includes(j.state) || items.some(i=>['failed','needs_review','no_changes'].includes(i.state));
+  const canCancel=['running','queued'].includes(j.state);
+  const p=j.progress||{};
+  const pstates=['done','partial','failed','needs_review','no_changes','pending','running'].filter(k=>p[k]).map(k=>`${STATE_LABEL[k]||k}: ${p[k]}`).join(' · ');
+  el.innerHTML=`
+    <div class="dhead">
+      <div class="dtitle">
+        <h2>${esc(name||'Job '+j.job_id.slice(0,8))}</h2>
+        <div class="dsub">${esc(j.job_id)} · ${esc(j.advertiser_id||'')} · tạo ${fmtTime(j.created_at)}${j.finished_at?' · chạy '+fmtDur(j.started_at,j.finished_at):''}${j.queue_position?' · xếp hàng #'+j.queue_position:''}${pstates?' · '+esc(pstates):''}</div>
+      </div>
+      ${stateChip(j.state)}
+      <div class="dactions">
+        ${canRetry?`<button class="btn btn-ghost btn-sm" id="btnRetry">↻ Chạy lại</button>`:''}
+        ${canCancel?`<button class="btn btn-danger btn-sm" id="btnCancel">✕ Huỷ job</button>`:''}
+      </div>
+    </div>
+    <div id="itemCards">${items.map(itemCard).join('')||'<div class="empty">Job không có item nào.</div>'}</div>
+    <div class="section"><h3>Nhật ký sự kiện</h3><div class="events">
+      ${(selEvents||[]).slice().reverse().map(e=>{
+        const d=e.data? Object.entries(e.data).slice(0,3).map(([k,v])=>k+': '+(typeof v==='object'?JSON.stringify(v):v)).join(' · '):'';
+        return `<div class="ev"><span class="ets">${fmtTime(e.ts)}</span><span class="etype">${esc(e.kind||'')}</span><span>${esc(e.message||'')}${e.smart_ad_id?' <span style="color:var(--faint)" class="mono">'+esc(String(e.smart_ad_id).slice(-6))+'</span>':''}${d?'<br><span style="color:var(--faint);font-size:.72rem" class="mono">'+esc(d)+'</span>':''}</span></div>`;
+      }).join('')||'<div class="empty" style="padding:10px">Chưa có sự kiện.</div>'}
+    </div></div>`;
+  document.querySelectorAll('.item-head').forEach(h=>h.onclick=()=>{
+    const card=h.parentElement, aid=card.dataset.aid;
+    openItems.has(aid)?openItems.delete(aid):openItems.add(aid);
+    card.classList.toggle('open');
+  });
+  const br=$('#btnRetry'); if(br) br.onclick=()=>{ $('#retryModal').classList.add('on'); };
+  const bc=$('#btnCancel'); if(bc) bc.onclick=async()=>{
+    if(!confirm('Huỷ job này? Item đang chạy sẽ bị dừng.')) return;
+    try{ await api('POST','/jobs/'+j.job_id+'/cancel',{}); toast('Đã huỷ job.','ok'); await loadDetail(j.job_id); refreshAll(true);}catch(e){ toast(e.message,'err'); }
+  };
+}
+
+/* ============ actions ============ */
+$('#btnDoRetry').onclick=async()=>{
+  const body={};
+  if($('#retryForce').checked) body.force=true;
+  const urls=$('#retryUrls').value.trim();
+  if(urls){ try{ body.video_urls=JSON.parse(urls); }catch(e){ toast('JSON link video không hợp lệ.','err'); return; } }
+  if($('#retryAdText').value.trim()) body.ad_text=$('#retryAdText').value.trim();
+  if($('#retryLanding').value.trim()) body.landing_page_url=$('#retryLanding').value.trim();
+  try{
+    await api('POST','/jobs/'+selJob+'/retry',body);
+    closeModal('retryModal'); toast('Đã xếp lại job vào hàng chờ.','ok');
+    await loadDetail(selJob); refreshAll(true);
+  }catch(e){ toast(e.message,'err'); }
+};
+$('#btnDoNewJob').onclick=async()=>{
+  let payload;
+  try{ payload=JSON.parse($('#newJobJson').value); }catch(e){ toast('JSON không hợp lệ — kiểm tra lại dấu ngoặc.','err'); return; }
+  const cb=$('#newJobCallback').value.trim();
+  const qs='/jobs'+(cb?('?callback_url='+encodeURIComponent(cb)):'');
+  try{
+    const r=await api('POST',qs,payload);
+    closeModal('newJobModal'); toast('Đã nhận job — đang xếp hàng xử lý.','ok');
+    selJob=r.job_id; refreshAll(true);
+  }catch(e){ toast(e.message,'err'); }
+};
+$('#btnNewJob').onclick=()=>$('#newJobModal').classList.add('on');
+$('#btnLogout').onclick=logout;
+$('#btnLogin').onclick=tryLogin;
+$('#inSecret').addEventListener('keydown',e=>{if(e.key==='Enter')tryLogin();});
+$('#autoRefresh').onchange=restartTimer;
+document.querySelectorAll('.overlay').forEach(o=>o.addEventListener('click',e=>{if(e.target===o)o.classList.remove('on');}));
+
+/* ============ boot ============ */
+if(store.cid&&store.secret){
+  $('#inCid').value=store.cid;
+  api('GET','/status').then(enterShell).catch(()=>{ $('#loginView').style.display='grid'; });
+}
+</script>
+</body>
+</html>
