@@ -431,6 +431,34 @@ def _fix_pass(ctx: dict, video: Path, work: Path, out_path: Path, feedback: list
             result.state, result.error = "no_changes", plan["reason"] or "không sửa được bằng cách chỉnh video"
         return False
 
+    # pass 2 render từ output pass 1 (blend đã baked vào hình) — không được phủ blend chồng lên đoạn đã blend,
+    # nên trừ hết các khoảng baked khỏi remove_region mới, chỉ giữ phần mở rộng ra ngoài
+    baked = sorted(ctx.get("baked_blends") or [])
+    if baked:
+        def subtract(start: float, end: float) -> list[tuple[float, float]]:
+            spans = [(start, end)]
+            for bs, be in baked:
+                nxt = []
+                for s0, e0 in spans:
+                    if e0 <= bs or s0 >= be:  # không overlap
+                        nxt.append((s0, e0))
+                    else:
+                        if s0 < bs:
+                            nxt.append((s0, bs))
+                        if e0 > be:
+                            nxt.append((be, e0))
+                spans = nxt
+            return [(s0, e0) for s0, e0 in spans if e0 - s0 >= 0.3]
+
+        filtered = []
+        for a in plan["visual_actions"]:
+            if a["type"] != "remove_region":
+                filtered.append(a)
+                continue
+            for s0, e0 in subtract(a["start"], a["end"]):
+                filtered.append({**a, "start": round(s0, 2), "end": round(e0, 2)})
+        plan["visual_actions"] = filtered
+
     for a in plan["visual_actions"]:
         if a["type"] == "cut" and "planned" not in a:
             a["planned"] = [a["start"], a["end"]]
@@ -573,6 +601,8 @@ def process_item(
                 if not src2.exists():
                     shutil.copyfile(out_path, src2)
                 ctx["pass_no"] = passes = 2
+                ctx["baked_blends"] = [(a["start"], a["end"]) for a in result.visual_edits
+                                       if a.get("type") == "remove_region"]
                 if _fix_pass(ctx, src2, work2, out2, chk["issues"]):
                     shutil.copyfile(out2, out_path)
                     with timed("recheck"):

@@ -456,7 +456,8 @@ class JobManager:
             if (job.job_id, idx) in self._running or res.state in ("pending", "running", "retrying"):
                 continue
             if body.smart_ad_ids is None:
-                if res.state not in ("failed", "cancelled"):
+                # retry-all: mặc định chỉ item failed/cancelled; force=true thì cả item đã xong (done/partial/...)
+                if res.state not in ("failed", "cancelled") and not body.force:
                     continue
             elif res.smart_ad_id not in body.smart_ad_ids:
                 continue

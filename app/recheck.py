@@ -26,9 +26,13 @@ covered segment, covered segments missing their blend layer (clean unblended vio
 or left garbled, when
 a disclaimer is unreadable, when the voice-over still states the violating claim, or when captions contradict the new
 voice-over.
-Judge the video as a whole with its NEW voice-over: ordinary app screens (chat lists, conversations, photos) are not
-violations by themselves when the new voice-over presents them as the user's own data; flag only what still states or
-depicts the violation (e.g. typing another person's number to unlock their data, "spy"/"hack" text, the old claim).
+Judge the video as a whole with its NEW voice-over. Visuals of apps, phones and product demonstrations are NEVER
+flagged - not even when they depict capabilities the rewritten voice-over no longer claims (entering a number,
+viewing chats, spy-like screens): this editor deliberately leaves footage untouched and fixes only the voice-over
+and on-screen text. Third-party logos, watermarks, creator handles and brand UI (WhatsApp, TikTok, store badges)
+visible in the footage are likewise accepted - do not flag them. In the VISUAL layer you may only flag: 18+ imagery
+outside any covered segment, violating captions/text still readable, half-erased or garbled text. In the AUDIO layer
+you may flag any violating claim the new voice-over still states.
 Only flag (a) what still matches a rejection reason, (b) clear violations of the global rules, (c) defects the editing
 introduced. Standard ad elements are legitimate: end cards with app name, logo, store badges and an animated
 "search the app" bar, CTA buttons, the AI-voice label and disclaimers added by the edit.
