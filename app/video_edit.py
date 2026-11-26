@@ -28,7 +28,7 @@ class Region:
     start: float
     end: float
     box: tuple[int, int, int, int]
-    method: str  # inpaint | blur
+    method: str  # inpaint | blur | overlay (chỉ vẽ đè, không xoá gì: disclaimer)
     overlay: np.ndarray | None = None  # RGBA vẽ đè sau khi xoá (text mới)
     overlay_xy: tuple[int, int] = (0, 0)
     ref: np.ndarray | None = None  # frame sạch ngay trước/sau lúc vùng xuất hiện, dùng khi nền đứng yên
@@ -50,6 +50,8 @@ def _ring(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
 def _with_ref(regions: list[Region], info: VideoInfo, frame_at) -> None:
     """Gắn frame sạch (trước khi vùng xuất hiện hoặc sau khi biến mất) cho từng vùng xoá."""
     for r in regions:
+        if r.method == "overlay":
+            continue
         t = r.start - 0.1 if r.start >= 0.1 else (r.end + 0.1 if r.end + 0.1 < info.duration else None)
         if t is not None:
             r.ref = frame_at(t)
@@ -231,6 +233,27 @@ def render_text(text: str, box_w: int, box_h: int, color: str, border: str) -> n
     return _draw_lines(lines, font, size, W, H, color, border)
 
 
+# Vùng an toàn để đặt disclaimer: tránh 20% dưới cùng (caption + nút của TikTok) và cột nút bên phải
+DISCLAIMER_BOX = (0.1, 0.67, 0.82, 0.71)
+AIGC_BOX = (0.25, 0.085, 0.75, 0.115)
+
+
+def overlay_label(text: str, info: VideoInfo, box: tuple[float, float, float, float]) -> tuple[np.ndarray, tuple[int, int]]:
+    """Dòng chữ trắng viền đen trên nền tối mờ, vừa khung box (toạ độ chuẩn hoá), dùng cho disclaimer / nhãn AI."""
+    x0, y0, x1, y1 = (int(v * d) for v, d in zip(box, (info.width, info.height, info.width, info.height)))
+    img = render_text(text, x1 - x0, y1 - y0, "white", "black")
+    h, w = img.shape[:2]
+    pad = max(4, h // 6)
+    out = np.zeros((h + 2 * pad, w + 2 * pad, 4), np.uint8)
+    out[..., 3] = 110  # nền đen mờ để chữ đọc được trên mọi nền
+    tile = out[pad:pad + h, pad:pad + w]
+    a = img[..., 3:4].astype(np.float32) / 255
+    tile[..., :3] = (img[..., :3] * a + tile[..., :3] * (1 - a)).astype(np.uint8)
+    tile[..., 3] = np.maximum(tile[..., 3], img[..., 3])
+    xy = (max(0, x0 + (x1 - x0 - out.shape[1]) // 2), max(0, y0 + (y1 - y0 - out.shape[0]) // 2))
+    return out, xy
+
+
 def _px_box(bbox: list[float], info: VideoInfo, pad: float) -> tuple[int, int, int, int]:
     x0, y0, x1, y1 = bbox
     ph = (y1 - y0) * pad
@@ -325,6 +348,11 @@ def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: Video
                     reg.overlay = img
                     reg.overlay_xy = (tb[0] + (tb[2] - tb[0] - img.shape[1]) // 2, tb[1] + (tb[3] - tb[1] - img.shape[0]) // 2)
                 regions.append(reg)
+        elif a["type"] in ("add_disclaimer", "aigc_label"):
+            img, xy = overlay_label(a["text"], info, AIGC_BOX if a["type"] == "aigc_label" else DISCLAIMER_BOX)
+            reg = Region(a["start"], a["end"], (xy[0], xy[1], xy[0] + img.shape[1], xy[1] + img.shape[0]), "overlay")
+            reg.overlay, reg.overlay_xy = img, xy
+            regions.append(reg)
         elif a["type"] == "remove_region":
             box = _refine_region(a, info, frame_at)
             x0, y0, x1, y1 = box
@@ -376,6 +404,65 @@ def _apply(frame: np.ndarray, t: float, regions: list[Region]) -> np.ndarray:
         if r.overlay is not None:
             frame = _composite(frame, r.overlay, r.overlay_xy)
     return frame
+
+
+def _gray_frames(video: Path, info: VideoInfo, t0: float, t1: float) -> tuple[np.ndarray, np.ndarray]:
+    """Frame xám 64px trong [t0, t1] kèm thời điểm của từng frame."""
+    t0, t1 = max(0.0, t0), min(info.duration, t1)
+    w = 64
+    h = max(2, int(round(info.height * w / info.width / 2)) * 2)
+    raw = runctx.run(["ffmpeg", "-v", "error", "-ss", f"{t0:.3f}", "-t", f"{t1 - t0:.3f}", "-i", str(video),
+                      "-vf", f"scale={w}:{h},format=gray", "-f", "rawvideo", "-"], capture_output=True).stdout
+    frames = np.frombuffer(raw[: len(raw) // (w * h) * w * h], np.uint8).reshape(-1, h, w).astype(np.float32)
+    return t0 + (np.arange(len(frames)) + 0.5) / info.fps, frames
+
+
+def _transitions(times: np.ndarray, frames: np.ndarray, fps: float) -> list[tuple[float, float]]:
+    """Các lần chuyển cảnh (cắt cứng hoặc mờ dần): so frame i với frame i-k (~0.25s trước) để bắt cả fade,
+    gom các frame vượt ngưỡng liền nhau thành 1 khoảng [bắt đầu, kết thúc] của chuyển cảnh."""
+    k = max(1, int(round(fps * 0.25)))
+    if len(frames) <= k + 1:
+        return []
+    d = np.abs(frames[k:] - frames[:-k]).mean(axis=(1, 2))
+    thr = max(12.0, 3 * float(np.median(d)))
+    out, cur = [], None
+    for idx in np.where(d > thr)[0]:
+        a, b = times[idx], times[idx + k]  # khoảng [frame i-k, frame i] chứa chuyển cảnh
+        if cur and a <= cur[1] + 1.5 / fps:
+            cur = (cur[0], b)
+        else:
+            if cur:
+                out.append(cur)
+            cur = (a, b)
+    if cur:
+        out.append(cur)
+    # thu hẹp mỗi khoảng về đúng frame thay đổi (so từng cặp frame liền nhau)
+    tight = []
+    step = np.abs(np.diff(frames, axis=0)).mean(axis=(1, 2))
+    for a, b in out:
+        sel = [n for n in range(len(step)) if a - 1e-6 <= times[n] and times[n + 1] <= b + 1e-6]
+        moving = [n for n in sel if step[n] > max(1.0, 0.1 * max(step[m] for m in sel))] if sel else []
+        tight.append((times[moving[0]], times[moving[-1] + 1]) if moving else (a, b))
+    return tight
+
+
+def snap_cut(video: Path, info: VideoInfo, start: float, end: float, window: float = 1.0) -> tuple[float, float]:
+    """Planner chỉ xem frame mỗi giây nên mốc cắt lệch ranh giới cảnh. Dời start về đầu lần chuyển cảnh GẦN start nhất
+    và end về cuối lần chuyển cảnh gần end nhất (trong ±window), bắt được cả chuyển cảnh mờ dần, để không sót
+    đầu/đuôi của shot vi phạm mà cũng không cắt lẹm sang shot hợp lệ bên cạnh."""
+    def edge(t: float, at_end: bool) -> float:
+        times, frames = _gray_frames(video, info, t - window, t + window)
+        trans = _transitions(times, frames, info.fps)
+        if not trans:
+            return t
+        a, b = min(trans, key=lambda r: 0.0 if r[0] <= t <= r[1] else min(abs(r[0] - t), abs(r[1] - t)))
+        return float(b + 0.5 / info.fps) if at_end else float(a - 0.5 / info.fps)
+
+    s = 0.0 if start < 0.3 else max(0.0, edge(start, False))
+    e = info.duration if info.duration - end < 0.3 else min(info.duration, edge(end, True))
+    if e - s < 0.2:
+        return start, end
+    return round(s, 3), round(e, 3)
 
 
 def cut_audio(audio: np.ndarray, sr: int, cuts: list[tuple[float, float]], fade: float = 0.015) -> np.ndarray:

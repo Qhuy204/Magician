@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 import threading
 import time
 import unicodedata
@@ -15,7 +16,7 @@ import numpy as np
 import soundfile as sf
 from openai import OpenAI
 
-from . import media, runctx, video_edit, vision
+from . import media, policies, recheck, runctx, video_edit, vision
 from .config import settings
 from .rewrite import lengthen, plan_edits, shorten
 from .planner import plan_fix, triage
@@ -301,14 +302,14 @@ def _even(frames: list, limit: int) -> list:
 
 
 def _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cache, hint, timed,
-                       product: str | None = None) -> np.ndarray:
+                       product: str | None = None, policy: dict | None = None) -> np.ndarray:
     """Viết lại câu thoại vi phạm, đọc lại bằng giọng clone và ghép vào vocal stem. Trả về vocal mới."""
     reason_lines = result.reject_reasons
     new_vocals = vocals.copy()
     with timed("rewrite"):
         script_key = _digest(json.dumps([language, reason_lines, [x["text"] for x in segments], product], ensure_ascii=False))
         audio_plan = cache.get(("rewrite", script_key), lambda: _persisted(
-            work / "rewrite.json", lambda: plan_edits(client, segments, language, reason_lines, hint, product)))
+            work / "rewrite.json", lambda: plan_edits(client, segments, language, reason_lines, hint, product, policy)))
     if not audio_plan["edits"]:
         return new_vocals
     by_id = {s["id"]: s for s in segments}
@@ -339,6 +340,207 @@ def _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cac
     return new_vocals
 
 
+def _ocr_and_triage(ctx: dict, video: Path, work: Path, segments, language, planner_frames, video_key):
+    """OCR chạy nền (cần ngôn ngữ để chọn bộ chữ), song song với lượt triage. Trả (quick, tracks)."""
+    result, cache, client, timed = ctx["result"], ctx["cache"], ctx["client"], ctx["timed"]
+    stop_ocr = threading.Event()
+    if rc := runctx.current():
+        rc.on_kill(stop_ocr.set)
+    tracks_file = work / "tracks.pkl"
+
+    def run_ocr():
+        import pickle
+
+        if tracks_file.exists():
+            return pickle.loads(tracks_file.read_bytes())
+        t0 = time.perf_counter()
+        tracks = vision.ocr_tracks(vision.sample_frames(video, settings.ocr_fps, 960), language or "en", settings.ocr_fps, stop_ocr)
+        result.timings["ocr"] = round(result.timings.get("ocr", 0) + time.perf_counter() - t0, 2)
+        if not stop_ocr.is_set():
+            tracks_file.write_bytes(pickle.dumps(tracks))
+        return tracks
+
+    with ThreadPoolExecutor(1) as bg:
+        ocr_future = bg.submit(lambda: cache.get(("ocr", video_key), run_ocr))
+        quick = {"decision": "fix"}
+        if ctx["pass_no"] == 1:
+            with timed("triage"):
+                quick = cache.get(("triage", video_key, tuple(result.reject_reasons), ctx["declared"]), lambda: _persisted(
+                    work / "triage.json", lambda: triage(client, ctx["reasons"], segments, planner_frames,
+                                                         ctx["violation_images"], ctx["hint"], ctx["declared"],
+                                                         ctx["policy"])))
+        if quick["decision"] == "unfixable":
+            stop_ocr.set()
+            return quick, []
+        with runctx.stage("ocr"):
+            while True:
+                try:
+                    return quick, ocr_future.result(timeout=1)
+                except TimeoutError:
+                    runctx.check()
+
+
+def _merge_overlays(actions: list[dict], language: str | None) -> list[dict]:
+    """Điền text disclaimer theo ngôn ngữ, gộp nhiều disclaimer thành 1 dòng (cùng vị trí trên khung)."""
+    disc = [a for a in actions if a["type"] == "add_disclaimer"]
+    rest = [a for a in actions if a["type"] != "add_disclaimer"]
+    texts = [t for t in dict.fromkeys(policies.disclaimer(a["key"], language) for a in disc) if t]
+    if texts:
+        rest.append({"type": "add_disclaimer", "keys": [a["key"] for a in disc], "text": " · ".join(texts),
+                     "start": min(a["start"] for a in disc), "end": max(a["end"] for a in disc)})
+    return rest
+
+
+def _fix_pass(ctx: dict, video: Path, work: Path, out_path: Path, feedback: list[dict] | None = None) -> bool:
+    """1 lượt phân tích + sửa + render. True = đã render video mới vào out_path."""
+    result, cache, client, timed, item = ctx["result"], ctx["cache"], ctx["client"], ctx["timed"], ctx["item"]
+    reasons, declared, hint = ctx["reasons"], ctx["declared"], ctx["hint"]
+    work.mkdir(parents=True, exist_ok=True)
+    video_key = _digest(video.read_bytes())
+    info = vision.video_info(video)
+    has_audio = media.has_audio(video)
+
+    # --- phân tích audio: tách giọng + transcript ---
+    segments, language, vocals, bgm, sr = [], None, None, None, 0
+    if has_audio:
+        with timed("separate"):
+            mix_wav = media.extract_audio(video, work / "mix.wav")
+            audio_key = _digest(mix_wav.read_bytes())
+            vocals, bgm, sr = cache.get(("separate", audio_key), lambda: _separate_cached(mix_wav, work))
+        vocals_path = work / "vocals.wav"
+        if not vocals_path.exists():  # item trùng audio lấy stem từ cache của item khác
+            sf.write(vocals_path, vocals, sr, subtype="FLOAT")
+        with timed("transcribe"):
+            tr = cache.get(("transcribe", audio_key), lambda: _persisted(
+                work / "transcript.json",
+                lambda: transcribe(client, media.to_mono_16k(vocals_path, work / "vocals_16k.wav"))))
+        segments, language = tr["segments"], tr["language"]
+        result.language = result.language or language
+
+    planner_frames = _even(vision.sample_frames(video, settings.planner_fps, 384), settings.max_planner_frames)
+    quick, tracks = _ocr_and_triage(ctx, video, work, segments, language, planner_frames, video_key)
+    if quick["decision"] == "unfixable":
+        result.plan = {"decision": "unfixable", "reason": quick["reason"], "product": quick.get("product", ""),
+                       "stage": "triage"}
+        result.policy_findings = [{"reason_index": i, "group": (gs or [None])[0], "verdict": "unfixable",
+                                   "fix": quick["reason"]} for i, gs in enumerate(ctx["groups"])]
+        result.state, result.error = "no_changes", quick["reason"] or "không sửa được bằng cách chỉnh video"
+        return False
+    track_map = {t.id: t for t in tracks}
+
+    with timed("plan"):
+        plan_key = _digest(json.dumps([video_key, [r.model_dump() for r in reasons], declared, feedback],
+                                      ensure_ascii=False))
+        plan = cache.get(("plan", plan_key), lambda: _persisted(work / "plan_raw.json", lambda: plan_fix(
+            client, reasons, info.duration, segments, language, tracks, planner_frames, ctx["violation_images"], hint,
+            declared, ctx["policy"], feedback)))
+    if ctx["pass_no"] == 1:
+        result.plan = plan
+        result.policy_findings = plan.get("findings") or []
+    else:
+        result.plan = {**result.plan, "pass2": plan}
+    ctx["actions_required"] += plan.get("action_required") or []
+    (work / "plan.json").write_text(json.dumps({"plan": plan, "tracks": [t.public() for t in tracks]},
+                                               ensure_ascii=False, indent=1), encoding="utf-8")
+    log.info("ad %s plan (pass %d): %s", item.smart_ad_id, ctx["pass_no"], json.dumps(plan, ensure_ascii=False)[:500])
+    if plan["decision"] != "fix":
+        if ctx["pass_no"] == 1:
+            result.state, result.error = "no_changes", plan["reason"] or "không sửa được bằng cách chỉnh video"
+        return False
+
+    for a in plan["visual_actions"]:
+        if a["type"] == "cut" and "planned" not in a:
+            a["planned"] = [a["start"], a["end"]]
+            a["start"], a["end"] = video_edit.snap_cut(video, info, a["start"], a["end"])
+    cuts = sorted((a["start"], a["end"]) for a in plan["visual_actions"] if a["type"] == "cut")
+    audio_is_cut = False
+    if cuts and has_audio and plan["fix_audio"] and segments and language:
+        # Cắt stem trước rồi mới viết lại + TTS: câu mới được sinh vừa khung trên timeline đã cắt,
+        # không bị cắt mất giữa câu như khi cắt audio sau cùng
+        vocals, bgm = video_edit.cut_audio(vocals, sr, cuts), video_edit.cut_audio(bgm, sr, cuts)
+        segments = _remap_segments(segments, cuts)
+        audio_is_cut = True
+
+    new_vocals = vocals
+    n_edits = len(result.edits)
+    if plan["fix_audio"] and segments and language:
+        new_vocals = _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cache, hint, timed,
+                                        declared or plan.get("product"), ctx["policy"])
+    pass_edits = result.edits[n_edits:]
+
+    lang = language or result.language or ctx["market_language"]
+    actions = _merge_overlays(list(plan["visual_actions"]), lang)
+    if plan["sync_captions"] and pass_edits:
+        taken = {i for a in actions for i in a.get("track_ids", [])}
+        # text track theo timeline gốc; edit theo timeline đã cắt (nếu đã cắt audio trước)
+        edits = [e.model_copy(update={"start": _from_cut(e.start, cuts), "end": _from_cut(e.end, cuts)})
+                 for e in pass_edits] if audio_is_cut else pass_edits
+        actions += _caption_actions(edits, tracks, taken)
+    if pass_edits and settings.aigc_overlay and not ctx["aigc_added"]:
+        # Policy "Edited media and AIGC": giọng clone nói câu người thật chưa nói => phải công bố
+        actions.append({"type": "aigc_label", "text": policies.disclaimer("aigc_voice", lang),
+                        "start": 0.0, "end": info.duration})
+        ctx["aigc_added"] = True
+    if not pass_edits and not actions:
+        if ctx["pass_no"] == 1:
+            result.state, result.error = "no_changes", plan["notes"] or "planner không đưa ra thao tác sửa nào"
+        return False
+
+    mixed = None
+    if has_audio:
+        mix = new_vocals + bgm
+        peak = float(np.abs(mix).max())
+        if peak > 0.99:
+            mix *= 0.99 / peak
+        mixed = work / "final_mix.wav"
+        sf.write(mixed, mix, sr, subtype="FLOAT")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    visual = [a for a in actions if a["type"] != "cut"]
+    blur_only = item.visual_method == "blur"
+    if visual or cuts:
+        with timed("render"):
+            regions = video_edit.build_regions(visual, track_map, info, lambda t: vision.frame_at(video, t),
+                                               blur_only=blur_only)
+            video_edit.render(video, mixed, out_path, info, regions, cuts, audio_is_cut)
+    else:
+        with timed("mux"):
+            media.mux(video, mixed, out_path)
+    result.visual_edits += [
+        {**a, "pass": ctx["pass_no"],
+         **({"texts": [track_map[i].text for i in a["track_ids"]]} if "track_ids" in a else {}),
+         **({"method": "blur"} if blur_only and a["type"] not in ("cut", "add_disclaimer", "aigc_label") else {})}
+        for a in actions]
+    return True
+
+
+def _ad_text(client, item: AdItem, reasons: list[ReviewReason], policy: dict, product: str | None) -> dict | None:
+    """Caption: chạy sau lượt sửa video để biết sản phẩm thật (declared hoặc planner xác định)."""
+    from . import adcopy
+
+    if not item.ad_text:
+        return None
+    try:
+        return adcopy.rewrite_ad_text(client, item.ad_text, reasons, policy, product, item.call_to_action)
+    except Exception as exc:
+        log.warning("ad text rewrite failed: %s", exc)
+        return {"original": item.ad_text, "error": str(exc)[:300]}
+
+
+def _side_checks(item: AdItem, reasons: list[ReviewReason], policy: dict, declared: str | None, usage: dict) -> dict:
+    """Landing page, chạy song song với phần video (không cần GPU)."""
+    from . import landing
+
+    out: dict = {}
+    if item.landing_page_url:
+        try:
+            # so khớp nội dung làm sau, khi đã biết sản phẩm thật + caption mới
+            out["landing_page"] = landing.check_landing(None, item.landing_page_url, declared, None)
+        except Exception as exc:
+            log.warning("landing page check failed: %s", exc)
+            out["landing_page"] = {"url": item.landing_page_url, "ok": False, "issues": [f"không kiểm tra được: {exc}"]}
+    return out
+
+
 def process_item(
     item: AdItem, result: ItemResult, reasons: list[ReviewReason], work: Path, out_path: Path,
     campaign: str | None, cache: JobCache | None = None,
@@ -358,127 +560,86 @@ def process_item(
         video = work / "source.mp4"
         if not video.exists():
             media.download(item.video_url, video)
-        video_key = _digest(video.read_bytes())
-    info = vision.video_info(video)
-    has_audio = media.has_audio(video)
 
-    # --- phân tích audio: tách giọng + transcript ---
-    segments, language, vocals, bgm, sr = [], None, None, None, 0
-    if has_audio:
-        with timed("separate"):
-            mix_wav = media.extract_audio(video, work / "mix.wav")
-            audio_key = _digest(mix_wav.read_bytes())
-            vocals, bgm, sr = cache.get(("separate", audio_key), lambda: _separate_cached(mix_wav, work))
-        vocals_path = work / "vocals.wav"
-        if not vocals_path.exists():  # item trùng audio lấy stem từ cache của item khác
-            sf.write(vocals_path, vocals, sr, subtype="FLOAT")
-        with timed("transcribe"):
-            tr = cache.get(("transcribe", audio_key), lambda: _persisted(
-                work / "transcript.json",
-                lambda: transcribe(client, media.to_mono_16k(vocals_path, work / "vocals_16k.wav"))))
-        segments, language = tr["segments"], tr["language"]
-        result.language = language
-
-    # --- phân tích hình: OCR chạy nền (cần ngôn ngữ để chọn bộ chữ), song song với lượt triage của planner ---
-    planner_frames = _even(vision.sample_frames(video, settings.planner_fps, 384), settings.max_planner_frames)
-    violation_images = _download_images([u for r in reasons for u in r.violation_frames] + item.violation_frames, work)
-    hint = " | ".join(x for x in (campaign, item.smart_ad_name, Path(urlparse(item.video_url).path).name) if x)
     declared = (item.product or "").strip() or None
-    stop_ocr = threading.Event()
-    if ctx := runctx.current():
-        ctx.on_kill(stop_ocr.set)
-    tracks_file = work / "tracks.pkl"
+    with timed("policy"):
+        groups = _persisted(work / "policy_groups.json",
+                            lambda: policies.classify_reasons(client, reasons, settings.vision_model))
+    policy = policies.policy_context(reasons, groups)
+    result.targeting_fix = policies.targeting_fix(reasons, groups)
+    regions = [x for r in reasons for x in r.affected_regions]
+    ctx = {
+        "item": item, "result": result, "reasons": reasons, "cache": cache, "client": client, "timed": timed,
+        "declared": declared, "groups": groups, "policy": policy, "pass_no": 1, "aigc_added": False,
+        "actions_required": [], "market_language": policies.language_for_regions(regions) or "en",
+        "hint": " | ".join(x for x in (campaign, item.smart_ad_name, Path(urlparse(item.video_url).path).name) if x),
+        "violation_images": _download_images([u for r in reasons for u in r.violation_frames] + item.violation_frames,
+                                             work),
+    }
+    side_usage: dict[str, float] = {}
+    with ThreadPoolExecutor(1) as side_pool:
+        side = side_pool.submit(_side_checks, item, reasons, policy, declared, side_usage)
+        rendered = _fix_pass(ctx, video, work, out_path)
+        if rendered and settings.recheck:
+            with timed("recheck"):
+                chk = recheck.recheck(client, out_path, reasons, policy, [e.model_dump() for e in result.edits],
+                                      result.visual_edits, ctx["hint"], declared, work)
+            passes = 1
+            if not chk["passed"] and settings.recheck_retry:
+                # Lượt 2: sửa tiếp trên chính video đã sửa, kèm danh sách vấn đề recheck tìm thấy
+                work2 = work / "pass2"
+                work2.mkdir(parents=True, exist_ok=True)
+                src2, out2 = work2 / "source.mp4", work2 / "out.mp4"
+                if not src2.exists():
+                    shutil.copyfile(out_path, src2)
+                ctx["pass_no"] = passes = 2
+                if _fix_pass(ctx, src2, work2, out2, chk["issues"]):
+                    shutil.copyfile(out2, out_path)
+                    with timed("recheck"):
+                        chk = recheck.recheck(client, out_path, reasons, policy, [e.model_dump() for e in result.edits],
+                                              result.visual_edits, ctx["hint"], declared, work2)
+            result.compliance_check = {"passed": chk["passed"], "issues": chk["issues"], "passes": passes}
+        side_out = side.result()
+    for k, v in side_usage.items():
+        result.usage[k] = result.usage.get(k, 0) + v
+    product = declared or (result.plan or {}).get("product") or None
+    result.ad_text_fix = _ad_text(client, item, reasons, policy, product)
+    result.landing_page = side_out.get("landing_page")
+    if result.landing_page and result.landing_page.get("final_url"):
+        from . import landing
 
-    def run_ocr():
-        import pickle
+        new_text = (result.ad_text_fix or {}).get("new") or item.ad_text
+        try:
+            result.landing_page = landing.check_consistency(client, result.landing_page, product, new_text)
+        except Exception as exc:
+            log.warning("landing consistency check failed: %s", exc)
+        result.landing_page.pop("_text", None)
 
-        if tracks_file.exists():
-            return pickle.loads(tracks_file.read_bytes())
-        t0 = time.perf_counter()
-        tracks = vision.ocr_tracks(vision.sample_frames(video, settings.ocr_fps, 960), language or "en", settings.ocr_fps, stop_ocr)
-        result.timings["ocr"] = round(time.perf_counter() - t0, 2)
-        if not stop_ocr.is_set():
-            tracks_file.write_bytes(pickle.dumps(tracks))
-        return tracks
+    # --- việc ngoài video ---
+    required = list(ctx["actions_required"])
+    if result.edits:
+        required.append({"type": "aigc_label", "detail": "Voice-over được clone bằng AI: bật nhãn AIGC khi đăng ad "
+                                                          "(policy Edited media and AIGC)."})
+    if result.targeting_fix and (result.targeting_fix["exclude_regions"] or result.targeting_fix["exclude_placements"]):
+        tf = result.targeting_fix
+        required.append({"type": "targeting", "detail": "Loại khỏi targeting: " + ", ".join(
+            tf["exclude_regions"] + tf["exclude_placements"]) + (f"; tuổi tối thiểu {tf['min_age']}+" if tf["min_age"] else "")})
+    if (fix := result.ad_text_fix) and fix.get("changed"):
+        required.append({"type": "ad_text", "detail": f"Thay caption bằng: {fix['new']}"})
+    elif fix and fix.get("compliant") is False:
+        required.append({"type": "ad_text", "detail": "Caption vi phạm, cần viết caption mới: " + "; ".join(fix["issues"])})
+    if (lp := result.landing_page) and lp.get("ok") is False:
+        required.append({"type": "landing_page", "detail": "; ".join(lp.get("issues") or [])[:500]})
+    if item.visual_method == "blur" and any(a.get("method") == "blur" for a in result.visual_edits):
+        required.append({"type": "review", "detail": "Đã dùng blur: TikTok cấm che hình bằng blur/pixel (Ad format), "
+                                                     "có thể bị reject lại; nên dùng visual_method=auto."})
+    seen = set()
+    result.action_required = [a for a in required if not ((a["type"], a["detail"]) in seen or seen.add((a["type"], a["detail"])))]
 
-    with ThreadPoolExecutor(1) as bg:
-        ocr_future = bg.submit(lambda: cache.get(("ocr", video_key), run_ocr))
-        with timed("triage"):
-            quick = cache.get(("triage", video_key, tuple(result.reject_reasons), declared), lambda: _persisted(
-                work / "triage.json",
-                lambda: triage(client, reasons, segments, planner_frames, violation_images, hint, declared)))
-        if quick["decision"] == "unfixable":
-            stop_ocr.set()
-            result.plan = {"decision": "unfixable", "reason": quick["reason"], "stage": "triage"}
-            result.state, result.error = "no_changes", quick["reason"] or "không sửa được bằng cách chỉnh video"
-            return
-        with runctx.stage("ocr"):
-            while True:
-                try:
-                    tracks = ocr_future.result(timeout=1)
-                    break
-                except TimeoutError:
-                    runctx.check()
-    track_map = {t.id: t for t in tracks}
-
-    with timed("plan"):
-        plan_key = _digest(json.dumps([video_key, [r.model_dump() for r in reasons], declared], ensure_ascii=False))
-        plan = cache.get(("plan", plan_key), lambda: _persisted(work / "plan_raw.json", lambda: plan_fix(
-            client, reasons, info.duration, segments, language, tracks, planner_frames, violation_images, hint,
-            declared)))
-    result.plan = plan
-    (work / "plan.json").write_text(json.dumps({"plan": plan, "tracks": [t.public() for t in tracks]},
-                                               ensure_ascii=False, indent=1), encoding="utf-8")
-    log.info("ad %s plan: %s", item.smart_ad_id, json.dumps(plan, ensure_ascii=False)[:500])
-    if plan["decision"] != "fix":
-        result.state, result.error = "no_changes", plan["reason"] or "không sửa được bằng cách chỉnh video"
-        return
-
-    cuts = sorted((a["start"], a["end"]) for a in plan["visual_actions"] if a["type"] == "cut")
-    audio_is_cut = False
-    if cuts and has_audio and plan["fix_audio"] and segments and language:
-        # Cắt stem trước rồi mới viết lại + TTS: câu mới được sinh vừa khung trên timeline đã cắt,
-        # không bị cắt mất giữa câu như khi cắt audio sau cùng
-        vocals, bgm = video_edit.cut_audio(vocals, sr, cuts), video_edit.cut_audio(bgm, sr, cuts)
-        segments = _remap_segments(segments, cuts)
-        audio_is_cut = True
-
-    new_vocals = vocals
-    if plan["fix_audio"] and segments and language:
-        new_vocals = _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cache, hint, timed,
-                                        declared or plan.get("product"))
-
-    actions = list(plan["visual_actions"])
-    if plan["sync_captions"] and result.edits:
-        taken = {i for a in actions for i in a.get("track_ids", [])}
-        # text track theo timeline gốc; edit theo timeline đã cắt (nếu đã cắt audio trước)
-        edits = [e.model_copy(update={"start": _from_cut(e.start, cuts), "end": _from_cut(e.end, cuts)})
-                 for e in result.edits] if audio_is_cut else result.edits
-        actions += _caption_actions(edits, tracks, taken)
-    if not result.edits and not actions:
-        result.state, result.error = "no_changes", plan["notes"] or "planner không đưa ra thao tác sửa nào"
-        return
-
-    mixed = None
-    if has_audio:
-        mix = new_vocals + bgm
-        peak = float(np.abs(mix).max())
-        if peak > 0.99:
-            mix *= 0.99 / peak
-        mixed = work / "final_mix.wav"
-        sf.write(mixed, mix, sr, subtype="FLOAT")
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    visual = [a for a in actions if a["type"] != "cut"]
-    if visual or cuts:
-        with timed("render"):
-            regions = video_edit.build_regions(visual, track_map, info, lambda t: vision.frame_at(video, t),
-                                               blur_only=item.visual_method == "blur")
-            video_edit.render(video, mixed, out_path, info, regions, cuts, audio_is_cut)
-    else:
-        with timed("mux"):
-            media.mux(video, mixed, out_path)
-    blur_only = item.visual_method == "blur"
-    result.visual_edits = [{**a, **({"texts": [track_map[i].text for i in a["track_ids"]]} if "track_ids" in a else {}),
-                            **({"method": "blur"} if blur_only and a["type"] != "cut" else {})}
-                           for a in actions]
-    result.state = "done"
+    if rendered:
+        if result.compliance_check and not result.compliance_check["passed"]:
+            result.state = "needs_review"
+            result.error = "; ".join(i["problem"] for i in result.compliance_check["issues"])[:1000]
+        else:
+            outside = [a for a in result.action_required if a["type"] not in ("aigc_label",)]
+            result.state = "partial" if outside else "done"

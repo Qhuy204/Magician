@@ -34,7 +34,9 @@ log = logging.getLogger(__name__)
 MANUAL_RETRY_CODES = {"network", "upstream_rate_limit", "upstream_error", "gpu_oom", "worker_crash", "stage_timeout",
                       "source_expired", "interrupted"}
 # Field kết quả copy từ bản chạy của pipeline sang ItemResult public
-RESULT_FIELDS = ("language", "reject_reasons", "edits", "error", "usage", "timings", "plan", "visual_edits", "state")
+RESULT_FIELDS = ("language", "reject_reasons", "edits", "error", "usage", "timings", "plan", "visual_edits", "state",
+                 "policy_findings", "action_required", "targeting_fix", "compliance_check", "ad_text_fix",
+                 "landing_page")
 
 
 def _now() -> datetime:
@@ -340,10 +342,13 @@ class JobManager:
             for f in RESULT_FIELDS:
                 setattr(res, f, getattr(work_res, f))
             res.stage, res.error_code, res.retryable = None, None, None
-            if res.state == "done":
+            if res.state in ("done", "partial", "needs_review") and out.exists():
                 res.output_video_url = settings.public_base_url.rstrip("/") + sign_file_path(f"/files/{job.job_id}/{out.name}")
+            if res.state == "needs_review":
+                res.error_code = "needs_review"
             elif res.state == "no_changes":
-                res.error_code = "unfixable" if res.plan.get("decision") == "unfixable" else "no_changes"
+                decision = res.plan.get("decision")
+                res.error_code = {"unfixable": "unfixable", "outside_only": "outside_video"}.get(decision, "no_changes")
             self._finish_item(job, res, res.state, time.perf_counter() - t0)
             return
 
@@ -455,7 +460,7 @@ class JobManager:
                     continue
             elif res.smart_ad_id not in body.smart_ad_ids:
                 continue
-            elif res.state in ("done", "no_changes", "skipped") and not body.force:
+            elif res.state in ("done", "partial", "needs_review", "no_changes", "skipped") and not body.force:
                 continue
             work = self.work_dir(job.job_id, item.smart_ad_id)
             if url := body.video_urls.get(res.smart_ad_id):
@@ -467,9 +472,15 @@ class JobManager:
                 item.product = body.product
             if body.visual_method:
                 item.visual_method = body.visual_method
-            if res.smart_ad_id in body.reasons or body.product or res.state in ("done", "no_changes"):
-                for f in ("triage.json", "plan_raw.json", "rewrite.json"):
+            if body.ad_text is not None:
+                item.ad_text = body.ad_text
+            if body.landing_page_url is not None:
+                item.landing_page_url = body.landing_page_url
+            if res.smart_ad_id in body.reasons or body.product or res.state in ("done", "partial", "needs_review",
+                                                                                 "no_changes"):
+                for f in ("triage.json", "plan_raw.json", "rewrite.json", "policy_groups.json"):
                     (work / f).unlink(missing_ok=True)
+                shutil.rmtree(work / "pass2", ignore_errors=True)
                 for f in work.glob("tts_*.wav") if work.exists() else []:
                     f.unlink(missing_ok=True)
             if res.state == "skipped" and item.status not in req.process_statuses:

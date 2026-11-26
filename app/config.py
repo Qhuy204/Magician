@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     max_cut_ratio: float = 0.35
     # Mặc định cho visual_method của request: auto | blur
     visual_method: str = "auto"
+    # Kiểm tra lại video sau khi sửa (transcribe + vision); recheck_retry: còn vi phạm thì sửa thêm 1 lượt
+    recheck: bool = True
+    recheck_retry: bool = True
+    # Video có giọng clone: chèn nhãn "AI-generated voice" trên hình (policy Edited media and AIGC)
+    aigc_overlay: bool = True
     lama_url: str = "https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt"
     video_crf: int = 18
     # auto | cuda | rocm | mps | cpu (cuda/rocm có thể kèm index, vd cuda:1)

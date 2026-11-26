@@ -1,0 +1,403 @@
+# Danh mục policy quảng cáo TikTok dùng cho planner / rewrite / recheck.
+# Nguồn: https://ads.tiktok.com/resources/help/article/tiktok-advertising-policies (đọc lại 11/2026).
+# Đây là bản tóm tắt để ra quyết định sửa creative, không thay thế toàn văn policy.
+#
+# kind:
+#   creative      sửa được trong video (lời thoại, chữ, hình, cắt)
+#   conditional   ngành được phép có điều kiện (tuổi, khu vực, giấy phép, disclaimer): sửa creative + action_required
+#   prohibited    phần lớn sản phẩm trong nhóm bị cấm: sản phẩm thuộc product_unfixable => unfixable
+#   out_of_scope  vi phạm nằm ngoài video (landing page, giao hàng, tài khoản): chỉ action_required
+# region_restricted: true => affected_regions của reason được gợi ý loại khỏi targeting
+version: "2026-11"
+
+# Ngôn ngữ disclaimer theo thị trường ưu tiên (US/EU, SA/AE, LatAm/BR)
+market_languages:
+  US: en
+  CA: en
+  GB: en
+  IE: en
+  ES: es
+  MX: es
+  AR: es
+  CO: es
+  CL: es
+  PE: es
+  EC: es
+  BO: es
+  UY: es
+  PY: es
+  BR: pt
+  PT: pt
+  SA: ar
+  AE: ar
+  KW: ar
+  QA: ar
+  BH: ar
+  OM: ar
+  EG: ar
+  FR: fr
+  DE: de
+  IT: it
+
+disclaimers:
+  aigc_voice:
+    en: "AI-generated voice"
+    es: "Voz generada con IA"
+    pt: "Voz gerada por IA"
+    ar: "صوت مُنشأ بالذكاء الاصطناعي"
+    fr: "Voix générée par IA"
+    de: "KI-generierte Stimme"
+    it: "Voce generata dall'IA"
+    hi: "AI द्वारा बनाई गई आवाज़"
+  results_vary:
+    en: "Results may vary."
+    es: "Los resultados pueden variar."
+    pt: "Os resultados podem variar."
+    ar: "النتائج قد تختلف"
+    fr: "Les résultats peuvent varier."
+    de: "Ergebnisse können variieren."
+    it: "I risultati possono variare."
+  terms_apply:
+    en: "Terms and conditions apply."
+    es: "Aplican términos y condiciones."
+    pt: "Termos e condições se aplicam."
+    ar: "تطبق الشروط والأحكام"
+    fr: "Conditions applicables."
+    de: "Es gelten die Geschäftsbedingungen."
+    it: "Si applicano termini e condizioni."
+  financial_risk:
+    en: "Investing involves risk. You may lose money."
+    es: "Invertir implica riesgos. Puedes perder dinero."
+    pt: "Investir envolve riscos. Você pode perder dinheiro."
+    ar: "الاستثمار ينطوي على مخاطر وقد تخسر أموالك"
+    fr: "Investir comporte des risques de perte en capital."
+    de: "Investieren birgt Risiken. Verluste sind möglich."
+    it: "Investire comporta rischi. Puoi perdere denaro."
+  responsible_drinking:
+    en: "Drink responsibly. 21+ (US) / 18+."
+    es: "Bebe con moderación. Solo mayores de edad."
+    pt: "Beba com moderação. Proibido para menores de 18 anos."
+    fr: "L'abus d'alcool est dangereux pour la santé, à consommer avec modération."
+    de: "Bitte verantwortungsvoll genießen. Ab 18."
+    it: "Bevi responsabilmente. Vietato ai minori."
+  gambling_responsible:
+    en: "18+. Gamble responsibly. Terms apply."
+    es: "+18. Juega con responsabilidad. Aplican términos."
+    pt: "+18. Jogue com responsabilidade. Termos se aplicam."
+    fr: "18+. Jouer comporte des risques. Conditions applicables."
+    de: "18+. Glücksspiel kann süchtig machen. AGB gelten."
+    it: "18+. Il gioco può causare dipendenza. Si applicano termini."
+  healthy_lifestyle:
+    en: "Use as part of a balanced diet and active lifestyle."
+    es: "Úsalo junto con una dieta equilibrada y un estilo de vida activo."
+    pt: "Use com uma dieta equilibrada e um estilo de vida ativo."
+    ar: "يُستخدم مع نظام غذائي متوازن ونمط حياة نشط"
+    fr: "À utiliser avec une alimentation équilibrée et une activité physique."
+    de: "In Verbindung mit ausgewogener Ernährung und Bewegung verwenden."
+    it: "Da usare con una dieta equilibrata e uno stile di vita attivo."
+  consult_professional:
+    en: "Consult a healthcare professional before use."
+    es: "Consulta a un profesional de la salud antes de usarlo."
+    pt: "Consulte um profissional de saúde antes de usar."
+    ar: "استشر مختصًا صحيًا قبل الاستخدام"
+    fr: "Consultez un professionnel de santé avant utilisation."
+    de: "Vor der Anwendung ärztlichen Rat einholen."
+    it: "Consulta un professionista sanitario prima dell'uso."
+
+# Luật chung áp cho mọi ad (đưa vào planner / recheck dù reason thuộc nhóm nào)
+global_rules:
+  - "Never hide a violation instead of removing it: no vague rewording, euphemisms, misspellings, coded words, partial covering, or moving the claim elsewhere."
+  - "Do not cover images with blur, columns or pixels (Ad format: 'must not use columns or pixels to partially cover images'; blurred third-party watermarks and blurred suggestive images are themselves violations). Remove with cut or remove_region (inpaint) instead."
+  - "Do not remove or hide third-party watermarks or credits: footage without usage rights must be replaced (action_required: rights), not masked."
+  - "Do not invent new claims, numbers, guarantees or features. Rewrites describe only what the product legitimately does."
+  - "Remove fake interactive elements: fake play/close buttons, fake pop-ups, fake system alerts, 'swipe up' or gestures that do nothing."
+  - "Remove QR codes that lead to third-party sites (not allowed in the EU, UK, SA, AE and most of the Middle East)."
+  - "Do not display real people's personal data (phone numbers, IDs, card numbers) on screen."
+  - "Voice cloned by Magician makes the speaker say something new: this is significant AI editing and must be disclosed (AIGC label / on-screen disclaimer)."
+
+groups:
+  - id: ad_format
+    name: Ad format and functionality
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-ad-format-and-functionality
+    kind: creative
+    keywords: [ad format, functionality, landing page, mobile-friendly, low quality, blurry, resolution, black border,
+               no audio, muffled, spelling, grammar, capitalization, symbols, qr code, swipe up, invalid button,
+               inconsistent with the landing page, consistency, language of the ad, target market language, currency,
+               static image, motionless, duration, personal data, privacy infringement, contact details]
+    rules:
+      - "Ad caption and on-screen text: no spelling/grammar mistakes, no excessive caps, spacing, numbers or symbols among letters (fix with replace_text using the corrected text)."
+      - "No blurry, illegible or partially covered visuals; no columns/pixels covering images."
+      - "No invalid buttons, gestures or text describing unsupported functionality (e.g. 'Swipe up to learn more')."
+      - "Ad content (video, caption, CTA, app name) must match the promoted product on the landing page."
+      - "Language, currency and subtitles must suit the target market; disclaimers in the local language."
+      - "Length 5-60 s, standard ratio (9:16, 1:1, 16:9), must contain clear audio, static images must not exceed 50% of the video."
+      - "No QR codes leading to third-party sites in EU/UK/Middle East markets."
+      - "Must not show or imply use that infringes someone's privacy, or display a real person's contact details."
+    out_of_video: [landing_page, ad_text, targeting]
+
+  - id: adult
+    name: Adult content
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-adult-content
+    kind: conditional
+    region_restricted: true
+    min_age: 18
+    keywords: [adult, dating, live chat, singles, hookup, sexual, sexually, suggestive, nudity, lingerie, swimsuit,
+               escort, erotic, provocative, intimate, flirtatious, sugar dating, mail-order]
+    rules:
+      - "Dating apps: only in allowed markets (not Bahrain, Iraq, Jordan, Kuwait, Lebanon, Morocco, Oman, Qatar, Saudi Arabia), 18+ targeting, via a TikTok Sales Representative; landing page must be an app store or website."
+      - "Dating ads must not show models who look 21 or younger, sexual references, suggestive text/audio, provocative body language, excessive skin exposure, infidelity, mail-order brides, or relationships in exchange for money (sugar dating). Do not portray single life negatively."
+      - "Live chat apps: 18+, explicit TikTok permission."
+      - "Not allowed at all: sexual services, sexual products (incl. enhancement products), sexually explicit content, sexually suggestive content (sexual kissing, sexualized poses, emphasis on sensitive body parts, undressing, revealing swimwear/lingerie)."
+      - "Suggestive shots are removed with cut (blurring suggestive images is itself a violation)."
+    product_unfixable: [sexual services, escort, adult entertainment, sexual products, sex toys, sexual enhancement,
+                        AI nudify, casual-sex dating app, sugar dating]
+    out_of_video: [targeting, certificate]
+
+  - id: alcohol
+    name: Alcohol
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-alcohol
+    kind: conditional
+    region_restricted: true
+    min_age: 18
+    keywords: [alcohol, beer, wine, liquor, spirits, vodka, whisky, drinking, intoxicat, drunk]
+    rules:
+      - "State alcohol content/strength and show a responsible drinking disclaimer (add_disclaimer responsible_drinking)."
+      - "Not allowed: appealing to people under legal drinking age, people under 25 or pregnant people on screen, excessive drinking, intoxication or reckless behavior, alcohol as a prize or incentive to drink."
+      - "Licenses required in each target market."
+    disclaimers: [responsible_drinking]
+    out_of_video: [targeting, certificate, landing_page]
+
+  - id: animals_environment
+    name: Animals and environment
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-animals-and-environment
+    kind: creative
+    keywords: [animal cruelty, animal abuse, endangered, wildlife, ivory, animal parts, exotic animal, environment]
+    rules:
+      - "No animal cruelty or abuse imagery (cut the shot)."
+      - "Selling endangered/protected animals or animal parts is not allowed."
+    product_unfixable: [endangered animal trade, animal parts trade, ivory]
+
+  - id: dangerous_products
+    name: Dangerous products or services
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-dangerous-products-or-services
+    kind: prohibited
+    keywords: [weapon, firearm, gun, ammunition, explosive, knife, police gear, military gear, tobacco, nicotine,
+               vape, e-cigarette, drug, narcotic, cannabis, marijuana, recreational drug]
+    rules:
+      - "Weapons, ammunition, explosives, tobacco/nicotine products and drugs are not allowed (limited exceptions)."
+      - "If such items only appear incidentally in footage for an unrelated legitimate product, cut those shots."
+    product_unfixable: [weapons, ammunition, explosives, tobacco, nicotine, e-cigarettes, vapes, recreational drugs]
+
+  - id: deceptive
+    name: Deceptive practices
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-deceptive-practices
+    kind: prohibited
+    keywords: [deceptive, dishonest, superstition, infringe privacy, privacy, spyware, malware, surveillance, monitor,
+               spy, track another, hack, access another, someone else's, partner's, without their knowledge,
+               identity theft, background check, people search, lookup, phone lookup, forgery, counterfeit document,
+               fake document, financial misrepresentation, get rich, flaunting money, guarantee of winning, scheme,
+               government benefit, public order, disrupt fairness]
+    rules:
+      - "Products that expose, steal or infringe someone's privacy are not allowed: spyware, covert monitoring of another person, background checks, people/phone lookup directories that reveal someone's name, age or address."
+      - "A legitimate product that the ad falsely presents as a privacy-infringing tool is fixable: rewrite to its real function and cut only the shots that depict the false capability (typing another person's number/name to unlock their data, 'spy'/'hack' text). Ordinary chat, contact or photo screens are not violations once the new voice-over presents them as the user's own data, and do not count against the cut limit."
+      - "Financial misrepresentation: no flaunting money, no get-rich claims without explaining how, no guarantees of winning, risks must be mentioned."
+      - "No deceptive claims or hidden fees."
+    product_unfixable: [spyware, stalkerware, covert partner monitoring app, account hacking tool,
+                        app whose real function is reading other people's messages,
+                        background check, people search / reverse phone lookup revealing personal data,
+                        document forgery, get-rich-quick scheme]
+
+  - id: discrimination
+    name: Discrimination, harassment and bullying
+    url: https://ads.tiktok.com/resources/help/article/discrimination-harassment-bullying
+    kind: creative
+    keywords: [discriminat, harass, bully, hate, hateful, insult, mock, slur, protected characteristic, racist, sexist,
+               body shaming, humiliat, degrading]
+    rules:
+      - "No content attacking, demeaning, excluding or mocking people based on protected characteristics; no bullying or harassment."
+      - "Rewrite or cut offensive lines and shots; replace or remove offensive on-screen text."
+    product_unfixable: [hateful organization]
+
+  - id: financial
+    name: Financial services
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-financial-services
+    kind: conditional
+    region_restricted: true
+    min_age: 18
+    keywords: [financial service, loan, credit, crypto, cryptocurrency, trading, forex, investment, invest, stock,
+               binary options, insurance, money lending, payday, earn money, income, returns, profit]
+    rules:
+      - "Allowed only per market with licenses/certification; many products (binary options, ICOs, some crypto, payday loans) are prohibited in many markets."
+      - "No guaranteed or exaggerated returns ('Get money in 10 seconds'); mention risks (add_disclaimer financial_risk)."
+      - "Must explain how the financial outcome is achieved; no flaunting money."
+    disclaimers: [financial_risk]
+    product_unfixable: [binary options, ICO, pyramid scheme, unlicensed lending]
+    out_of_video: [certificate, targeting, landing_page]
+
+  - id: gambling
+    name: Gambling and games
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-gambling-and-games
+    kind: prohibited
+    region_restricted: true
+    min_age: 18
+    keywords: [gambling, casino, betting, bet, slots, poker, roulette, lottery, sweepstakes, giveaway, mystery box,
+               fantasy sports, real money, rewarded gaming, chance-based, win cash, cash out, withdraw, payout,
+               wallet balance, reward app, earn by watching, money-making, cash reward, restricted reward app]
+    rules:
+      - "Gambling (online/offline casinos, sports betting, lotteries, fantasy sports, mystery boxes, rewarded gaming) needs TikTok certification, legal markets only, 18+, mandatory responsible-gambling disclaimers."
+      - "Apps whose core offer is paying users cash for watching/playing are restricted reward apps: unfixable without certification."
+      - "Social casino games without real-money prizes: no cash-out imagery; promotions need clear terms."
+      - "Not allowed: false offers, underage audiences or people, failing transparency requirements."
+    disclaimers: [gambling_responsible]
+    product_unfixable: [online casino, sports betting, lottery, real-money game, cash reward app, earn money by watching,
+                        rewarded gaming]
+    out_of_video: [certificate, targeting]
+
+  - id: healthcare
+    name: Healthcare and pharmaceuticals
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-healthcare-pharmaceuticals
+    kind: conditional
+    region_restricted: true
+    min_age: 18
+    keywords: [health, medical, medicine, drug, pharmacy, prescription, supplement, treatment, cure, clinic, doctor,
+               surgery, cosmetic procedure, CBD, hemp, medical device, condom, disease]
+    rules:
+      - "Prescription medicines are not allowed; OTC medicines, medical devices, clinics, pharmacies and supplements need 18+ and certification per market."
+      - "No cure claims, no guaranteed results, no before-and-after comparisons; add results_vary / consult_professional disclaimers where relevant."
+    disclaimers: [results_vary, consult_professional]
+    product_unfixable: [prescription medicine]
+    out_of_video: [certificate, targeting]
+
+  - id: ip
+    name: Intellectual property infringement
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-intellectual-property-infringement
+    kind: creative
+    keywords: [intellectual property, copyright, trademark, brand, logo, counterfeit, replica, unauthorized,
+               tiktok logo, tiktok bestseller, bytedance, endorsement, partnership with tiktok, watermark, music rights]
+    rules:
+      - "No unauthorized third-party names, logos or brands that suggest affiliation (remove with remove_region inpaint, never blur)."
+      - "No TikTok logo, 'TikTok Bestseller' or implied TikTok/ByteDance endorsement (remove)."
+      - "Clips from unauthorized media sources cannot be fixed by masking watermarks: action_required rights."
+      - "Counterfeit / replica products: unfixable."
+    product_unfixable: [counterfeit goods, replicas, pirated digital products]
+    out_of_video: [rights]
+
+  - id: misinformation
+    name: Misinformation
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-misinformation
+    kind: creative
+    keywords: [misinformation, false information, conspiracy, health misinformation, climate, election misinformation,
+               vaccine]
+    rules:
+      - "No false claims harmful to health, public safety, environment or elections: remove or rewrite the claim, cut the shots."
+    product_unfixable: [misinformation campaign]
+
+  - id: misleading
+    name: Misleading and false content
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-misleading-and-false-content
+    kind: creative
+    keywords: [misleading, exaggerat, false claim, false or misleading, absolute, guarantee, 100%, number 1, best,
+               before-and-after, before and after, clickbait, fake button, fake play, fake close, fake pop-up,
+               inconsistent information, missing disclaimer, comparison, competitor, ai-generated, aigc, edited media,
+               deepfake, identity misuse, public figure, celebrity, unrealistic, product functionality, fear]
+    rules:
+      - "No promised or exaggerated results, no absolute terms about time, region or brand ('right away', 'Number 1 on TikTok', '100%', 'guaranteed')."
+      - "Promotion, price and discount must match the landing page; include required disclaimers / terms (add_disclaimer terms_apply when a promotion is shown)."
+      - "No clickbait: fake play/close buttons, fake carousel dots, fake CTA pop-ups, blurred or blocked suggestive images."
+      - "No before-and-after effect comparisons; no malicious or subjective comparisons with a named competitor."
+      - "Significant AI edits (AI voice cloning, AI-generated footage) need the AIGC label or a clear on-screen disclaimer."
+      - "No public figure likeness without permission (cut the shots)."
+    disclaimers: [results_vary, terms_apply]
+
+  - id: other_products
+    name: Other products and services
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-other-products-and-services
+    kind: conditional
+    region_restricted: true
+    keywords: [energy drink, legal services, real estate, hfss, high in fat, fertilizer, pesticide, underwear,
+               shapewear, swimwear, vpn, horoscope, fortune-telling, astrology, psychic, prediction market, tax,
+               accounting, superstition, spells, magic]
+    rules:
+      - "Industry-specific conditions per market (energy drinks, real estate, HFSS food, VPNs, horoscope/fortune-telling, prediction markets, underwear/swimwear presentation)."
+      - "Fortune-telling and superstition must not claim real effects; underwear/swimwear must not be sexualized."
+    product_unfixable: [black magic, spells, unsuitable business products]
+    out_of_video: [targeting, certificate]
+
+  - id: politics
+    name: Politics, government and elections
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-politics-government-and-elections
+    kind: prohibited
+    keywords: [political, politics, election, candidate, party, government, vote, campaign, referendum, politician]
+    rules:
+      - "Paid political advertising is not allowed. Incidental political references in an unrelated ad are cut."
+    product_unfixable: [political campaign, candidate promotion, political party]
+
+  - id: suicide_self_harm
+    name: Suicide and self-harm
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-suicide-and-self-harm
+    kind: creative
+    keywords: [suicide, self-harm, self harm, cutting, kill yourself]
+    rules:
+      - "No content promoting, normalizing or instructing suicide or self-harm: cut the shots and rewrite the lines."
+
+  - id: youth_safety
+    name: Youth safety and well-being
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-youth-safety
+    kind: creative
+    min_age: 18
+    keywords: [minor, minors, child, children, kid, teen, underage, youth, school]
+    rules:
+      - "No minors at risk of sexual, physical or emotional harm; no minors drinking, gambling or smoking; no inappropriate skin exposure of minors (cut the shots)."
+      - "Do not pressure teens to buy, ask parents, or imply popularity from owning the product (rewrite)."
+      - "Products appealing to under-13s in EU/LatAm and other listed markets: 18+ targeting and no childish creative."
+    out_of_video: [targeting]
+
+  - id: after_conversion
+    name: After-conversion experience
+    url: https://ads.tiktok.com/resources/help/article/tiktok-after-conversion-experience-policy
+    kind: out_of_scope
+    keywords: [after conversion, delivery, shipping, refund, product quality, order, fulfillment, data theft,
+               pricing transparency, flash sale, survey, free gift, 70% off, subscription, hidden fee]
+    rules:
+      - "Products must match the ad; promotions, fees and subscriptions disclosed upfront; no too-good-to-be-true gifts or >70% discounts."
+      - "Ad-side fixes: remove misleading free-gift / extreme discount claims; disclose fees (rewrite, add_disclaimer terms_apply)."
+    disclaimers: [terms_apply]
+    out_of_video: [landing_page, fulfillment]
+
+  - id: violence
+    name: Violence and dangerous activities
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-violence-and-dangerous-activities
+    kind: creative
+    keywords: [violence, violent, blood, bloody, gore, gruesome, shock, accident, crime, fight, weapon use, dangerous
+               activity, challenge, stunt, injury, fear, panic, virus detected, you may be in danger, war, terror,
+               non-consensual, disgusting, pimple, pores]
+    rules:
+      - "No bloody, gruesome or shocking imagery, disgusting visuals, crime or excessive violence, animal cruelty, sexual violence (cut the shots)."
+      - "No fear or panic messages such as 'Virus detected, remove it now' or 'You may be in danger' (remove the text / rewrite the line)."
+      - "No dangerous challenges or easily copied harmful behavior; no 'now it's your turn' encouragement."
+      - "No promotion of war, armed conflict or terrorism."
+    product_unfixable: [terrorism, war promotion]
+
+  - id: weight_management
+    name: Weight management
+    url: https://ads.tiktok.com/resources/help/article/tiktok-ads-policy-weight-management
+    kind: conditional
+    region_restricted: true
+    min_age: 18
+    keywords: [weight loss, lose weight, slim, fat burn, diet, muscle gain, body image, body shaming, ideal body,
+               before-and-after body, kg in, pounds in, appetite]
+    rules:
+      - "No unrealistic or guaranteed weight loss / muscle gain, no 'without diet or exercise', no 'easy' claims; promote a healthy lifestyle (add_disclaimer healthy_lifestyle)."
+      - "No body shaming, ideal body type, or claims that appearance brings happiness, success or popularity."
+      - "18+ targeting; supplements / meal replacements / surgery only in allowed markets."
+    disclaimers: [healthy_lifestyle]
+    out_of_video: [targeting, certificate]
+
+  - id: pangle
+    name: Pangle creative and industry policies
+    url: https://ads.tiktok.com/resources/help/article/pangle-ad-creative-policies
+    kind: creative
+    keywords: [pangle]
+    rules:
+      - "Pangle placements follow the same creative rules plus Pangle industry entry restrictions; if only Pangle is affected, excluding the Pangle placement is an option."
+    out_of_video: [targeting]

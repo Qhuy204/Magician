@@ -66,6 +66,10 @@ class AdItem(BaseModel):
     product: str | None = None
     # auto: planner chọn inpaint / thay chữ / blur; blur: mọi chỗ sửa hình đều làm mờ. Ghi đè JobRequest.visual_method
     visual_method: Literal["auto", "blur"] | None = None
+    # Caption của ad và URL trang đích (nếu dashboard có): viết lại caption theo policy + kiểm tra landing page
+    ad_text: str | None = None
+    landing_page_url: str | None = None
+    call_to_action: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -77,6 +81,13 @@ class AdItem(BaseModel):
         v.setdefault("smart_ad_name", v.get("ad_name"))
         v.setdefault("status", v.get("review_status"))
         v.setdefault("video_id", v.get("rejected_video_id"))
+        for key in ("ad_text", "ad_texts", "caption", "ad_caption", "text"):
+            if v.get("ad_text") is None and v.get(key):
+                val = v[key]
+                v["ad_text"] = val[0] if isinstance(val, list) else val
+        for key in ("landing_page_url", "landing_url", "landing_page", "click_url", "store_url", "app_url", "deeplink"):
+            if v.get("landing_page_url") is None and isinstance(v.get(key), str) and v[key].startswith("http"):
+                v["landing_page_url"] = v[key]
         if v.get("reasons") is None and v.get("reject_reasons") is not None:
             v["reasons"] = v["reject_reasons"]
         return v
@@ -113,8 +124,10 @@ class JobRequest(BaseModel):
 
 
 # pending = đang chờ trong hàng đợi; retrying = lỗi tạm thời, chờ tới next_retry_at để chạy lại
-ItemState = Literal["pending", "running", "retrying", "done", "no_changes", "skipped", "failed", "cancelled"]
-TERMINAL_ITEM_STATES = {"done", "no_changes", "skipped", "failed", "cancelled"}
+# partial = đã có video sửa nhưng còn việc ngoài video (action_required); needs_review = recheck vẫn thấy vi phạm
+ItemState = Literal["pending", "running", "retrying", "done", "partial", "needs_review", "no_changes", "skipped",
+                    "failed", "cancelled"]
+TERMINAL_ITEM_STATES = {"done", "partial", "needs_review", "no_changes", "skipped", "failed", "cancelled"}
 
 
 class Edit(BaseModel):
@@ -145,6 +158,19 @@ class ItemResult(BaseModel):
     plan: dict[str, Any] = {}
     # Các thao tác trên hình đã áp dụng (replace_text / remove_text / remove_region / cut)
     visual_edits: list[dict[str, Any]] = []
+    # --- policy ---
+    # Mỗi reject reason: nhóm policy, kết quả xử lý (fixed_in_video | outside_video | unfixable | not_found)
+    policy_findings: list[dict[str, Any]] = []
+    # Việc phải làm ngoài video: [{type: targeting|certificate|landing_page|ad_text|rights|aigc_label|..., detail}]
+    action_required: list[dict[str, Any]] = []
+    # Gợi ý targeting cho ngành hạn chế theo khu vực / tuổi: {exclude_regions, exclude_placements, min_age, why}
+    targeting_fix: dict[str, Any] | None = None
+    # Kiểm tra lại video kết quả: {passed, issues: [...], passes}
+    compliance_check: dict[str, Any] | None = None
+    # Caption viết lại: {original, new, changed, notes}
+    ad_text_fix: dict[str, Any] | None = None
+    # Kiểm tra landing page: {url, final_url, status, ok, issues}
+    landing_page: dict[str, Any] | None = None
     # --- vận hành ---
     stage: str | None = None
     attempt: int = 0
@@ -190,6 +216,8 @@ class RetryRequest(BaseModel):
     # Ghi đè sản phẩm thật / cách sửa hình cho các item được retry
     product: str | None = None
     visual_method: Literal["auto", "blur"] | None = None
+    ad_text: str | None = None
+    landing_page_url: str | None = None
 
 
 class CancelRequest(BaseModel):

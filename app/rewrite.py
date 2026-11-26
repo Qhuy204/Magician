@@ -13,6 +13,7 @@ Your job:
 2. Rewrite those segments so they genuinely comply with TikTok Advertising Policies, keeping the tone
    and call to action.
 Rules:
+- Follow "policy.global_rules" and the playbooks in "policy.playbooks" (TikTok policy groups of the rejection reasons).
 - Remove the violating claim; never restate it with euphemisms, misspellings, or coded wording meant to slip past review.
 - Never keep claims about accessing other people's accounts, messages, calls, or location without their consent,
   hacking, or capabilities the product does not plausibly have. Replace them with the product's legitimate
@@ -34,10 +35,11 @@ Respond with JSON only: {"edits": [{"segment_ids": [int], "new_text": str, "reas
 
 
 def plan_edits(client: OpenAI, segments: list[dict], language: str, reject_reasons: list[str], campaign: str | None,
-               product: str | None = None) -> dict:
+               product: str | None = None, policy: dict | None = None) -> dict:
     payload = {
         "campaign": campaign,
         "product": product,
+        "policy": policy,
         "language": language,
         "reject_reasons": reject_reasons,
         "segments": [

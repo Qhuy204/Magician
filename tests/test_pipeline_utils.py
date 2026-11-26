@@ -53,3 +53,21 @@ def test_schema_product_and_visual_method():
                                      "ads": [{"smart_ad_id": "a"}, {"smart_ad_id": "b", "product": "x", "visual_method": "auto"}]})
     assert req.product == "Shieldy call app" and req.visual_method == "blur"
     assert req.items[0].product is None and req.items[1].visual_method == "auto"
+
+
+def test_snap_cut_catches_crossfade(tmp_path):
+    """Đỏ 0–2s, mờ dần sang xanh 1.75–2.25s, xanh tới 5s, cắt cứng sang trắng ở 4s. Planner bảo cắt 2.0–3.8
+    (đoạn xanh) => start lùi về đầu crossfade, end tới sát lần cắt cứng ở 4s."""
+    import subprocess
+
+    from app import video_edit, vision
+
+    v = tmp_path / "x.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=red:s=320x568:d=2:r=30",
+                    "-f", "lavfi", "-i", "color=blue:s=320x568:d=2.25:r=30", "-f", "lavfi", "-i", "color=white:s=320x568:d=2:r=30",
+                    "-filter_complex", "[0][1]xfade=transition=fade:duration=0.5:offset=1.75[a];[a][2]concat=n=2:v=1[v]",
+                    "-map", "[v]", "-pix_fmt", "yuv420p", str(v)], check=True)
+    info = vision.video_info(v)
+    s, e = video_edit.snap_cut(v, info, 2.0, 3.8)
+    assert 1.7 <= s <= 2.0, s
+    assert 3.95 <= e <= 4.1, e
