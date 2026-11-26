@@ -35,7 +35,7 @@ dùng công cụ nào dựa trên lý do reject và danh mục policy TikTok (`a
 | 4 | OCR text trên màn hình, gom thành "text track" (nội dung, vị trí, thời gian) | EasyOCR (GPU) |
 | 5 | **Planner** chọn công cụ cho từng vi phạm theo playbook, kết luận cho từng lý do reject, liệt kê việc ngoài video | `VISION_MODEL` |
 | 6 | Sửa voice-over nếu cần: viết lại câu vi phạm, clone giọng, ghép lại | `gpt-6-luna` + OmniVoice / XTTS |
-| 7 | Sửa hình: làm mờ text/pop-up/logo/QR/watermark/cảnh vi phạm, vẽ text mới đè lên vùng đã mờ, chèn disclaimer, nhãn "AI-generated voice". Video không bao giờ bị cắt ngắn | blur, ffmpeg drawtext |
+| 7 | Sửa hình: xoá/thay caption vi phạm, phủ nội dung 18+ bằng video meme alpha blending full-frame, chèn disclaimer, nhãn "AI-generated voice". Video không bao giờ bị cắt ngắn; footage app/watermark/logo giữ nguyên | alpha blending, blur nhỏ cho caption, ffmpeg drawtext |
 | 9 | Encode lại video (hoặc chỉ thay audio nếu hình không đổi) | ffmpeg / libx264 |
 | 10 | **Recheck**: transcribe audio mới + xem frame video kết quả, đối chiếu lý do reject. Còn vi phạm thì sửa thêm 1 lượt, vẫn còn thì `needs_review` | `gpt-transcribe` + `VISION_MODEL` |
 | 11 | Viết lại caption (`ad_text`), kiểm tra landing page (`landing_page_url`) nếu request có | `REWRITE_MODEL`, httpx |
@@ -48,11 +48,11 @@ Công cụ planner có thể chọn:
 | `sync_captions` | Có phụ đề in sẵn lặp lại lời thoại | Phụ đề của câu bị sửa được thay bằng câu mới, cùng vị trí / màu / cỡ chữ |
 | `replace_text` | Text vi phạm có cách nói hợp lệ, text sai chính tả / viết hoa / ký hiệu loạn | Làm mờ text cũ, vẽ text mới đè lên cùng vị trí, màu chữ + viền lấy từ text cũ |
 | `remove_text` | Text vi phạm, không cần thay | Làm mờ text |
-| `remove_region` | Pop-up, banner, số tiền, badge, QR code, nút giả, dữ liệu cá nhân, **watermark/handle/logo bên thứ 3** (kể cả khi lý do reject không nhắc), cả cảnh quay vi phạm (màn hình rút tiền, cảnh gợi dục, máu me, footage chức năng giả...) | Làm mờ vùng. Cảnh vi phạm toàn khung thì blur gần hết khung hình — video giữ nguyên độ dài, không bao giờ cắt |
+| `remove_region` | **Chỉ** nội dung 18+ và bạo lực đồ hoạ (ảnh gợi dục, khỏa thân, máu me) — vì đó là vi phạm thuần hình ảnh không sửa được bằng lời | Phủ video meme lên TOÀN KHUNG bằng alpha blending: `out = alpha·meme + (1-alpha)·gốc` — cả 2 video chạy đồng thời, video gốc mờ bên dưới (cố ý). alpha mặc định 0.5, planner nâng tới 0.7 với ảnh quá lộ liễu. Footage app, watermark, logo, QR, pop-up... đều giữ nguyên — chỉ sửa lời thoát và caption |
 | `add_disclaimer` | Ngành bắt buộc disclaimer (tài chính, rượu, cờ bạc, sức khoẻ, giảm cân) hoặc promotion cần "Terms apply" | Dòng chữ trên nền mờ ở vùng an toàn, đúng ngôn ngữ của ad (en / es / pt / ar / fr / de / it) |
 | (tự động) nhãn AIGC | Voice-over đã được clone | "AI-generated voice" / "Voz generada con IA"... ở trên cùng, kèm `action_required: aigc_label` |
 
-**Service không phán xét sản phẩm.** Kể cả khi lý do reject thuộc ngành bị cấm (cờ bạc, spyware, app trả tiền...), pipeline vẫn sửa: viết lại voice-over/text bỏ claim vi phạm, blur hình ảnh mô tả chức năng vi phạm. Sản phẩm có được duyệt hay không là việc của tài khoản quảng cáo, service chỉ làm sạch nội dung creative. Không còn quyết định `unfixable`: item chỉ ra `no_changes` khi video thật sự không có gì để sửa.
+**Service không phán xét sản phẩm.** Kể cả khi lý do reject thuộc ngành bị cấm (cờ bạc, spyware, app trả tiền...), pipeline vẫn sửa: viết lại voice-over/text bỏ claim vi phạm. Hình ảnh footage (kể cả màn hình app mô tả chức năng giả) giữ nguyên — theo vận hành thực tế, reviewer chủ yếu bắt lời thoát/text; hình ảnh app không rõ nghĩa khi lời thoát đã đổi. Sản phẩm có được duyệt hay không là việc của tài khoản quảng cáo. Không còn quyết định `unfixable`: item chỉ ra `no_changes` khi video thật sự không có gì để sửa.
 
 ### Policy
 
@@ -65,11 +65,11 @@ Công cụ planner có thể chọn:
   - Watermark / handle / logo bên thứ 3 trong footage phải được làm mờ. Chỉ khi toàn bộ creative là nội dung có thương hiệu của người khác (trailer phim, quảng cáo của brand khác) thì làm mờ không còn ý nghĩa: `action_required: rights` / `new_creative`.
   - Bỏ nút giả, cảnh báo hệ thống giả, QR code dẫn sang trang ngoài (EU / UK / Trung Đông).
   - Video có giọng clone phải công bố AIGC.
-  - Lưu ý rủi ro đã biết: policy Ad format của TikTok cấm "columns or pixels to partially cover images", trong khi service xoá nội dung vi phạm bằng blur theo yêu cầu vận hành. Vết blur che watermark/logo/caption nhỏ thường vẫn pass, nhưng mảng blur lớn toàn khung có thể bị reviewer chấm lại — đó là trade-off của việc giữ nguyên độ dài video thay vì cắt.
+  - Nội dung 18+ bị phủ video meme alpha blending full-frame — đúng style creator TikTok, nhìn như lựa chọn sáng tạo chứ không phải vết che kiểm duyệt. Footage app/watermark/logo giữ nguyên.
 - **Ngành bị hạn chế theo khu vực / tuổi** (dating, rượu, tài chính, y tế, giảm cân...): làm sạch creative, gợi ý
   `targeting_fix` = loại các `affected_regions` + tuổi tối thiểu. Không sửa video để nó lọt qua ở khu vực mà ngành bị cấm.
 - **Sản phẩm hợp lệ bị ad mô tả sai** (vd app chuyển dữ liệu nhưng ad nói "đọc trộm chat"):
-  - Sửa được: viết lại voice-over theo chức năng thật, blur cảnh minh hoạ chức năng giả.
+  - Sửa được: viết lại voice-over theo chức năng thật; footage giữ nguyên.
   - `product` trong request (nếu có) được coi là sự thật về sản phẩm.
 
 Service xoá hẳn claim vi phạm, không diễn đạt lại bằng từ né, không che một nửa, không dời sang chỗ khác để lọt review.
@@ -237,11 +237,11 @@ Field thừa được giữ nguyên, không gây lỗi. Ví dụ format mới:
 | `video_id` / `rejected_video_id`, `preview_video_id` | | Khớp reject reason của TikTok với đúng video; cũng dùng để nhận ra ad gửi trùng |
 | `reasons` / `reject_reasons` | | Mỗi phần tử là chuỗi hoặc object `{category, detail, timestamps, affected_regions, affected_placements, violation_frames}`. `timestamps` dạng `"0:22–0:24"` giúp planner tìm đúng chỗ. Có thì dùng luôn, không gọi TikTok API |
 | `violation_frames` | | URL ảnh frame vi phạm (nếu có); planner nhìn ảnh để xác định phần bị flag |
-| `product` | | Sản phẩm thật đang quảng cáo, vd `"Shieldy - call app: caller ID, chặn cuộc gọi rác"`. Đặt ở cấp job hoặc từng ad (ad ghi đè job). Planner coi đây là sự thật: creative lấy từ nơi khác (footage app hẹn hò, theo dõi người yêu...) thì các cảnh đó bị blur, voice-over viết lại theo sản phẩm này |
+| `product` | | Sản phẩm thật đang quảng cáo, vd `"Shieldy - call app: caller ID, chặn cuộc gọi rác"`. Đặt ở cấp job hoặc từng ad (ad ghi đè job). Planner coi đây là sự thật: voice-over viết lại theo đúng chức năng sản phẩm này kể cả khi footage lấy từ nơi khác (app hẹn hò, theo dõi người yêu...) |
 | `ad_text` (alias `ad_texts[0]`, `caption`, `ad_caption`) | | Caption của ad: được viết lại theo policy, trả về `ad_text_fix` |
 | `landing_page_url` (alias `landing_url`, `landing_page`, `click_url`, `store_url`, `app_url`, `deeplink`) | | Trang đích: được kiểm tra, trả về `landing_page` |
 | `call_to_action` | | CTA, dùng khi viết lại caption |
-| `visual_method` | | deprecated: pipeline chỉ còn làm mờ (không còn inpaint). Field vẫn nhận để tương thích nhưng bỏ qua |
+| `visual_method` | | deprecated: pipeline che 18+ bằng meme cover (không còn inpaint/blur toàn cảnh). Field vẫn nhận để tương thích nhưng bỏ qua |
 | `callback_url` | | Webhook nhận kết quả, chỉ https |
 | `process_statuses` | | Mặc định `["UNAVAILABLE","PART_AVAILABLE"]` |
 
@@ -690,10 +690,10 @@ Timeline của 1 job (mỗi lần chạy, retry, lỗi): `GET /jobs/{id}/events`
   dùng cho quảng cáo thật.
 - **OmniVoice nói ngôn ngữ khác giọng gốc:** giọng Arab đọc tiếng Bồ Đào Nha bị ASR nhận sai ~20% ký tự (giọng nặng).
   Khi giọng mẫu và câu mới cùng ngôn ngữ (trường hợp bình thường của pipeline) thì không gặp.
-- **Sửa hình:** mọi xoá đều là làm mờ — vùng bị mờ nhìn thấy được (không liền lạc như inpaint), là trade-off để render nhanh.
+- **Sửa hình:** caption bị xoá/thay để lại vệt mờ nhỏ; đoạn 18+ hiện cảnh blend đôi meme+video gốc (cố ý — alpha blending), video gốc vẫn mờ mờ bên dưới.
   Text mới dùng font Noto (Arab / Devanagari / Latin), màu chữ + viền đoán từ text cũ, chưa bắt chước được font đặc biệt
   hay hiệu ứng (gradient, bóng đổ, chữ chạy). OCR có thể sót text nhỏ hoặc text nghiêng.
-  Policy Ad format cấm che hình bằng blur/pixel: vùng mờ nhỏ (watermark, caption) thường vẫn qua, nhưng ad có thể bị reject
+  Policy Ad format cấm che hình bằng blur/pixel: meme cover nhìn như lựa chọn sáng tạo nên thường qua, nhưng ad có thể bị reject
   lại nếu vùng mờ lớn — trường hợp đó planner đã tự chuyển sang cắt thay vì làm mờ.
 - **Tốc độ OCR:** ~0.4s/frame trên RTX 3060 (video 45s đổi cảnh liên tục mất ~40s; màn hình tĩnh nhanh hơn nhiều).
 - **Link video:** link Bunny/TikTok trong JSON hết hạn sau khoảng 1 giờ, phải gửi job ngay sau khi lấy JSON.

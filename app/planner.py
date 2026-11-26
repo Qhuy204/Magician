@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 
 VERDICTS = ("fixed_in_video", "outside_video", "unfixable", "not_found")
 # Tăng khi đổi SYSTEM: cache key của plan gồm version này để prompt mới không dùng lại plan cũ
-PLAN_PROMPT_VERSION = 2
+PLAN_PROMPT_VERSION = 3
 
 
 SYSTEM = """You are the compliance editor for TikTok video ads. Given TikTok's rejection reasons, the TikTok policy
@@ -29,13 +29,14 @@ per second, each labelled with its timestamp), decide how to fix the ad with the
 - replace_text {track_ids, new_text}: erase on-screen text and draw compliant text in the same place, same language.
   Also used to correct spelling / excessive capitalization / symbols among letters.
 - remove_text {track_ids}: erase on-screen text with nothing in its place.
-- remove_region {start, end, bbox, what}: blur a non-text graphic or violating visual content inside bbox during
-  [start, end]. The bbox must enclose the whole violating content including its text, shadow and border. Use it for
-  pop-ups, banners, cash counters, badges, watermarks, creator handles, TikTok logos, unauthorized brand logos,
-  QR codes, fake buttons, personal data, suggestive/gory imagery - and also for whole shots whose content violates
-  policy (then use a full-frame or near-full-frame bbox). Blurring is the ONLY visual removal method: the video is
-  never cut and nothing is ever inpainted, so pick the bbox generously enough that nothing violating stays readable
-  or recognizable. Watermarks/handles/third-party logos must be blurred even when no rejection reason mentions them.
+- remove_region {start, end, what, alpha?}: cover inherently visual 18+ content (suggestive/sexual imagery, nudity,
+  graphic violence or gore) during [start, end] by blending a neutral meme video over the WHOLE frame - per-pixel
+  alpha blending of two simultaneous video streams (out = alpha*cover + (1-alpha)*original), never split-screen,
+  never cut, nothing erased. alpha is the cover opacity 0-1 (default 0.5): the original video stays ghost-visible
+  underneath on purpose; raise it toward 0.7 only for very explicit imagery. Give start/end for the whole violating
+  shot. Do NOT use it for anything else: app screens, phone screens, watermarks, creator handles, logos, QR codes,
+  pop-ups, cash counters, claim graphics or captions are all left as they are - those are handled only by rewriting
+  the voice-over and text.
 - add_disclaimer {key, start, end}: overlay a required disclaimer line. key is one of the playbook "disclaimers"
   (results_vary, terms_apply, financial_risk, responsible_drinking, gambling_responsible, healthy_lifestyle,
   consult_professional). Default start/end = whole video. The text is filled in the ad's language automatically.
@@ -45,17 +46,17 @@ Your role:
 - You are a media editor, not a product judge. NEVER refuse to fix because of what the product or business is: you
   do not decide whether the advertiser may sell it. Even when the rejection is about a prohibited or restricted
   product category, you still clean up the video: rewrite voice-over and text so they no longer state or depict the
-  prohibited capability, and blur every visual that depicts it.
+  prohibited capability.
 - First identify the product actually advertised from the visuals (end card, app name/logo, store badges, app UI) and
   what it legitimately does. Report it in "product". "declared_product", when given, is the advertiser's statement of
   the real product and is authoritative over what the footage suggests.
 - Rewrite direction for fix_audio: the new voice-over describes only the product's real, legitimate function (a
   phone-to-phone transfer app moves YOUR OWN chats/photos to a new phone; a caller-ID app filters spam calls). It
-  must never restate or hint at the prohibited capability.
-- Judge the visuals as they will read AFTER the rewrite: ordinary app screens (a chat list, a conversation, photos)
-  are not violations by themselves when the new voice-over presents them as the user's own data. Blur only shots that
-  specifically depict the prohibited capability (typing another person's number/name to unlock their data, "spy" or
-  "hack" overlays, cash/payout screens, suggestive or gory imagery, captions repeating the claim).
+  must never restate or hint at the prohibited capability. The voice-over being the violating part throughout is the
+  normal case: it gets fully rewritten.
+- Visuals are left as they are: app screens, phone screens and product demonstrations are never covered, even when
+  they depict capabilities the rewritten voice-over no longer claims. The ONLY visuals ever covered are 18+ imagery
+  (suggestive/sexual content, nudity) and graphic violence/gore.
 
 Policy:
 - Follow "policy.global_rules" and every playbook in "policy.playbooks". "policy.reason_groups" maps each rejection
@@ -71,8 +72,8 @@ Policy:
   fixing the video. Only include them when they are clearly relevant.
 
 Rules:
-- Fix the violation for real: remove the violating claim or blur the violating visual so nothing of it stays
-  readable or recognizable. Never keep it by rewording it vaguely, misspelling it, or moving it elsewhere.
+- Fix the violation for real: rewrite the violating claim away, or cover 18+ visuals so nothing of them stays
+  visible. Never keep a violating claim by rewording it vaguely, misspelling it, or moving it elsewhere.
 - Do not invent product claims. replace_text must describe only what the ad already legitimately shows.
 - Use the given timestamps to locate violations, but check neighbouring frames: the same element often appears
   longer. Cover the whole time the element is visible.
@@ -80,8 +81,8 @@ Rules:
   video needs changing at all (every finding is outside_video / not_found). Never output "unfixable".
 - "review_feedback", when present, means this video was ALREADY edited once and a compliance check found these
   remaining problems: fix only them. Disclaimers / the AI-voice label already visible are intended: do not add them
-  again or remove them. Blur patches from the earlier edit are intentional: do not blur them again, only enlarge or
-  extend them when the feedback says the violation is still visible.
+  again or remove them. Texture cover panels from the earlier edit are intentional: do not cover them again,
+  only enlarge or extend them when the feedback says 18+ content is still visible.
 Respond with JSON only:
 {"decision": "fix" | "outside_only", "reason": str, "product": str, "fix_audio": bool,
  "sync_captions": bool,
@@ -166,8 +167,8 @@ def _actions_required(plan: dict) -> list[dict]:
 
 
 def _validate(plan: dict, tracks: list[TextTrack], duration: float, n_reasons: int = 0) -> dict:
-    """Bỏ action sai định dạng, kẹp toạ độ/thời gian. Mọi xoá hình đều là blur; cut do model hallucinate
-    thì đổi thành blur toàn khung (video không bao giờ bị cắt)."""
+    """Bỏ action sai định dạng, kẹp thời gian. remove_region = alpha-blend video meme full-frame (chỉ nội dung 18+);
+    cut do model hallucinate cũng thành remove_region (video không bao giờ bị cắt)."""
     ids = {t.id for t in tracks}
     disclaimer_keys = set(policies.catalog().disclaimers) - {"aigc_voice"}
     actions = []
@@ -198,20 +199,14 @@ def _validate(plan: dict, tracks: list[TextTrack], duration: float, n_reasons: i
             if end - start < 0.05:
                 continue
             what = a.get("what", "")
-            if kind == "cut":
-                # model không còn được dùng cut; nếu vẫn sinh ra thì blur toàn khung đoạn đó
-                actions.append({"type": "remove_region", "start": round(start, 2), "end": round(end, 2),
-                                "bbox": [0.0, 0.0, 1.0, 1.0], "method": "blur",
-                                "what": f"{what} (toàn cảnh)"})
-                continue
+            if kind == "cut" and what:
+                what = f"{what} (toàn cảnh)"
+            act = {"type": "remove_region", "start": round(start, 2), "end": round(end, 2), "what": what}
             try:
-                x0, y0, x1, y1 = (min(1.0, max(0.0, float(v))) for v in a["bbox"])
+                act["alpha"] = round(min(1.0, max(0.05, float(a["alpha"]))), 2)
             except (KeyError, TypeError, ValueError):
-                continue
-            if x1 - x0 < 0.01 or y1 - y0 < 0.01:
-                continue
-            actions.append({"type": "remove_region", "start": round(start, 2), "end": round(end, 2),
-                            "bbox": [x0, y0, x1, y1], "method": "blur", "what": what})
+                pass
+            actions.append(act)
     # quyết định derive từ nội dung: có gì để sửa thì fix, không có gì thì outside_only
     decision = "fix" if (plan.get("fix_audio") or actions) else "outside_only"
     reason = plan.get("reason", "")

@@ -21,24 +21,33 @@ def test_remap_segments_shrinks_and_drops():
     assert [s["id"] for s in out] == [0]
     assert out[0]["end"] == 14.6
 
-def test_large_remove_region_stays_blur():
-    # vùng lớn cũng blur: video không bao giờ bị cắt
+def test_large_remove_region_stays_cover():
+    # vùng lớn cũng cover bằng texture: video không bao giờ bị cắt, method không còn tồn tại
     plan = {"decision": "fix", "fix_audio": True, "visual_actions": [
         {"type": "remove_region", "start": 5, "end": 8, "bbox": [0.06, 0.04, 0.94, 0.92], "what": "form"},
         {"type": "remove_region", "start": 1, "end": 2, "bbox": [0.2, 0.4, 0.8, 0.55], "what": "popup"}]}
     out = _validate(plan, [], 19.0)
     assert [a["type"] for a in out["visual_actions"]] == ["remove_region", "remove_region"]
-    assert all(a["method"] == "blur" for a in out["visual_actions"])
+    assert all("method" not in a for a in out["visual_actions"])
     assert out["decision"] == "fix"
 
-def test_cut_action_becomes_fullframe_blur():
-    # planner không còn công cụ cut; nếu model vẫn sinh ra thì đổi thành blur toàn khung
+def test_cut_action_becomes_cover():
+    # planner không còn công cụ cut; nếu model vẫn sinh ra thì đổi thành remove_region (alpha-blend full-frame)
     plan = {"decision": "fix", "fix_audio": True, "visual_actions": [
         {"type": "cut", "start": 5, "end": 8, "what": "spy footage"}]}
     out = _validate(plan, [], 19.0)
     a = out["visual_actions"][0]
-    assert a["type"] == "remove_region" and a["method"] == "blur" and a["bbox"] == [0.0, 0.0, 1.0, 1.0]
-    assert a["start"] == 5 and a["end"] == 8
+    assert a["type"] == "remove_region" and "bbox" not in a and "method" not in a
+
+
+def test_validate_alpha_clamped():
+    plan = {"decision": "fix", "fix_audio": True, "visual_actions": [
+        {"type": "remove_region", "start": 0, "end": 2, "what": "nudity", "alpha": 1.8},
+        {"type": "remove_region", "start": 3, "end": 4, "what": "gore", "alpha": "bad"}]}
+    out = _validate(plan, [], 19.0)
+    assert out["visual_actions"][0]["alpha"] == 1.0
+    assert "alpha" not in out["visual_actions"][1]
+
 
 def test_schema_product_and_visual_method():
     from app.schemas import JobRequest
@@ -65,8 +74,8 @@ def test_snap_cut_catches_crossfade(tmp_path):
     assert 1.7 <= s <= 2.0, s
     assert 3.95 <= e <= 4.1, e
 
-def test_build_regions_all_blur(tmp_path):
-    """Mọi vùng xoá đều blur (không còn inpaint); replace_text vẫn có overlay text mới."""
+def test_build_regions_remove_region_is_fullframe_blend(tmp_path):
+    """remove_region thành blend region TOÀN KHUNG HÌNH (alpha blending 2 video) — không còn bbox."""
     import subprocess
 
     from app import video_edit, vision
@@ -76,11 +85,34 @@ def test_build_regions_all_blur(tmp_path):
                     "-pix_fmt", "yuv420p", str(v)], check=True)
     info = vision.video_info(v)
     actions = [
-        {"type": "remove_region", "start": 0.0, "end": 2.0, "bbox": [0.0, 0.0, 0.3, 0.06]},
-        {"type": "remove_region", "start": 0.0, "end": 2.0, "bbox": [0.3, 0.4, 0.5, 0.5]},
+        {"type": "remove_region", "start": 0.0, "end": 2.0, "what": "nudity"},
+        {"type": "remove_region", "start": 0.0, "end": 2.0, "what": "gore", "alpha": 0.7},
     ]
     regions = video_edit.build_regions(actions, {}, info, lambda t: vision.frame_at(v, t))
-    assert all(r.method == "blur" for r in regions)
+    assert all(r.method == "blend" for r in regions)
+    assert all(r.box == (0, 0, info.width, info.height) for r in regions)  # full-frame
+    assert regions[0].alpha == 0.5 and regions[1].alpha == 0.7
+
+
+def test_apply_blend_formula_and_motion():
+    """Alpha blending: out = alpha*B + (1-alpha)*A per-pixel; cả 2 lớp cùng hiện, video B có chuyển động."""
+    import numpy as np
+
+    from app import video_edit
+    from app.video_edit import CoverLayer, Region
+
+    cover = CoverLayer(64, 128, seed=0)
+    bottom = np.full((128, 64, 3), 200, np.uint8)
+    b_frame = cover.frame(5.0).astype(np.float32)
+    reg = Region(0.0, 10.0, (0, 0, 64, 128), "blend", alpha=0.5)
+    out = video_edit._apply(bottom.copy(), 5.0, [reg], cover).astype(np.float32)
+    expected = 0.5 * b_frame + 0.5 * 200
+    assert np.abs(out - expected).mean() < 2.0  # đúng công thức alpha blending
+    # video B chuyển động: 2 thời điểm khác nhau phải khác nhau
+    assert np.abs(cover.frame(1.0).astype(int) - cover.frame(4.0).astype(int)).mean() > 1.0
+    # ngoài khoảng region: không blend
+    out2 = video_edit._apply(bottom.copy(), 11.0, [reg], cover)
+    assert (out2 == 200).all()
 
 def test_blur_render_obscures_watermark(tmp_path):
     """Vẽ chữ giả watermark lên video, render với vùng blur: chữ không còn đọc được (năng lượng tần số cao giảm)."""

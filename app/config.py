@@ -60,6 +60,7 @@ class Settings(BaseSettings):
     # Video có giọng clone: chèn nhãn "AI-generated voice" trên hình (policy Edited media and AIGC)
     aigc_overlay: bool = True
     video_crf: int = 18
+    cover_alpha: float = 0.5  # độ trong suốt lớp video meme phủ nội dung 18+ (0-1): out = alpha*B + (1-alpha)*A
     # auto | cuda | rocm | mps | cpu (cuda/rocm có thể kèm index, vd cuda:1)
     device: str = "auto"
     # 0 = tự tính theo VRAM/RAM; >0 = ép số worker TTS

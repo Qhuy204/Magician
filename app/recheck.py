@@ -18,9 +18,12 @@ You get the original rejection reasons, the TikTok policy playbooks ("policy"), 
 video, the edits that were applied, and frames of the edited video (one per second, labelled with timestamps).
 Decide whether the edited VIDEO still violates any rejection reason or global rule. Ignore what is outside the video
 (targeting, landing page, licenses, AIGC label setting): those are handled separately.
-Blurring is the intended removal method of this editor: every blur patch listed in "applied_visual_edits" is
-intentional. Do NOT flag the existence of blur patches. DO flag when the violation is still readable or recognizable
-through or outside the blur (blur too small, too short, or too weak), when text was half-erased or left garbled, when
+Alpha-blended meme cover layers are the intended treatment of this editor for 18+ imagery: during the segments
+listed in "applied_visual_edits" the frame intentionally shows a semi-transparent meme video blended over the
+original video (both videos ghost-visible at once). Do NOT flag the double-image blended look, and do NOT flag the
+covered imagery being faintly visible underneath - that is by design. DO flag 18+ imagery appearing OUTSIDE any
+covered segment, covered segments missing their blend layer (clean unblended violating footage), text half-erased
+or left garbled, when
 a disclaimer is unreadable, when the voice-over still states the violating claim, or when captions contradict the new
 voice-over.
 Judge the video as a whole with its NEW voice-over: ordinary app screens (chat lists, conversations, photos) are not

@@ -24,9 +24,68 @@ class Region:
     start: float
     end: float
     box: tuple[int, int, int, int]
-    method: str  # blur | overlay (chỉ vẽ đè, không xoá gì: disclaimer, nhãn AIGC)
+    method: str  # blend | blur | overlay — blend: phủ video meme full-frame theo alpha (nội dung 18+);
+    # blur: caption strip xoá/thay text; overlay: chỉ vẽ đè, không xoá gì (disclaimer, nhãn AIGC)
     overlay: np.ndarray | None = None  # RGBA vẽ đè sau khi làm mờ (text mới)
     overlay_xy: tuple[int, int] = (0, 0)
+    alpha: float = 0.5  # hệ số alpha lớp video meme (method blend): out = alpha*B + (1-alpha)*A
+
+
+OVERLAY_DIR = Path(__file__).parent / "assets" / "overlays"
+_COVER_CACHE: dict[str, np.ndarray] = {}
+
+
+def load_cover_image(seed: int | None = None) -> np.ndarray:
+    """Ảnh meme trung tính (RGB) làm lớp video B — style creator TikTok phủ footage nhạy cảm.
+    seed=None: random; truyền seed để deterministic trong test."""
+    import random
+
+    import cv2
+
+    variants = sorted(p for ext in ("*.png", "*.jpg", "*.jpeg") for p in OVERLAY_DIR.glob(ext))
+    if not variants:
+        raise FileNotFoundError(f"thiếu overlay assets trong {OVERLAY_DIR}")
+    path = variants[(random.randrange(len(variants)) if seed is None else seed) % len(variants)]
+    if path.stem not in _COVER_CACHE:
+        _COVER_CACHE[path.stem] = cv2.cvtColor(cv2.imread(str(path)), cv2.COLOR_BGR2RGB)
+    return _COVER_CACHE[path.stem]
+
+
+class CoverLayer:
+    """Video B cho alpha blending: meme full-frame chuyển động liên tục (Ken Burns — zoom/pan dao động
+    chậm). Sinh procedurally đúng resolution/fps của video gốc nên resolution, pixel format và timestamp
+    luôn khớp sẵn, full-frame spatial alignment tuyệt đối. Ảnh nguồn scale cover 1.35x để dư biên pan."""
+
+    def __init__(self, w: int, h: int, seed: int | None = None):
+        import random
+
+        import cv2
+
+        self.w, self.h = w, h
+        img = load_cover_image(seed)
+        ih, iw = img.shape[:2]
+        scale = max(w / iw, h / ih) * 1.35
+        self.src = cv2.resize(img, (int(iw * scale + 0.5), int(ih * scale + 0.5)), interpolation=cv2.INTER_LINEAR)
+        rng = random.Random(seed)
+        self.ph = [rng.uniform(0, 6.28) for _ in range(2)]  # phase random theo seed — mỗi item một kiểu pan
+
+    def frame(self, t: float) -> np.ndarray:
+        import cv2
+
+        sw, sh = self.src.shape[1], self.src.shape[0]
+        # k = số pixel nguồn trên 1 pixel output; k <= base thì ảnh phủ kín frame, không bao giờ lòi viền đen.
+        # z >= 1 là zoom-in; pan bị giới hạn bởi slack thật còn lại nên mọi hướng đều an toàn
+        base = min(sw / self.w, sh / self.h)
+        z = 1.06 + 0.06 * np.sin(t * 0.35 + self.ph[0])
+        k = base / z
+        slack_x = max(0.0, (sw - self.w * k) / 2 - 1)
+        slack_y = max(0.0, (sh - self.h * k) / 2 - 1)
+        cx = sw / 2 + slack_x * np.sin(t * 0.22 + self.ph[1]) * 0.85
+        cy = sh / 2 + slack_y * np.sin(t * 0.27 + self.ph[0]) * 0.85
+        M = np.float32([[k, 0, cx - k * self.w / 2], [0, k, cy - k * self.h / 2]])
+        # M đã là ma trận nghịch (dst→src) nên phải truyền WARP_INVERSE_MAP — mặc định warpAffine
+        # coi M là transform xuôi và tự nghịch đảo thêm lần nữa, khiến sampling lệch ra ngoài ảnh (frame đen)
+        return cv2.warpAffine(self.src, M, (self.w, self.h), flags=cv2.INTER_LINEAR | cv2.WARP_INVERSE_MAP)
 
 
 def blur(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
@@ -228,39 +287,9 @@ def _union(ts: list[TextTrack]) -> list[float]:
     return [min(t.bbox[0] for t in ts), min(t.bbox[1] for t in ts), max(t.bbox[2] for t in ts), max(t.bbox[3] for t in ts)]
 
 
-def _refine_region(a: dict, info: VideoInfo, frame_at) -> tuple[int, int, int, int]:
-    """Bbox của vision LLM thường hụt vài %. Nới thêm lề, rồi so frame trước khi graphic xuất hiện với frame lúc đang
-    hiện: vùng pixel đổi mạnh quanh bbox chính là graphic, lấy hợp của 2 vùng."""
-    import cv2
-
-    x0, y0, x1, y1 = a["bbox"]
-    mx, my = max(0.015, (x1 - x0) * 0.08), max(0.012, (y1 - y0) * 0.15)
-    box = [max(0.0, x0 - mx), max(0.0, y0 - my), min(1.0, x1 + mx), min(1.0, y1 + my)]
-    px = [int(box[0] * info.width), int(box[1] * info.height), int(box[2] * info.width) + 1, int(box[3] * info.height) + 1]
-    ref_t = a["start"] - 0.3 if a["start"] >= 0.3 else (a["end"] + 0.3 if a["end"] + 0.3 < info.duration else None)
-    if ref_t is None:
-        return tuple(px)
-    before, during = frame_at(ref_t).astype(np.int16), frame_at((a["start"] + a["end"]) / 2).astype(np.int16)
-    # chỉ tìm trong vùng gấp đôi bbox để không bắt nhầm chuyển động ở chỗ khác
-    w, h = px[2] - px[0], px[3] - px[1]
-    sx0, sy0 = max(0, px[0] - w // 2), max(0, px[1] - h // 2)
-    sx1, sy1 = min(info.width, px[2] + w // 2), min(info.height, px[3] + h // 2)
-    diff = np.abs(during[sy0:sy1, sx0:sx1] - before[sy0:sy1, sx0:sx1]).max(axis=2) > 40
-    diff = cv2.morphologyEx(diff.astype(np.uint8), cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(diff)
-    for i in range(1, n):
-        cx, cy, cw, ch, area = stats[i]
-        gx0, gy0, gx1, gy1 = cx + sx0, cy + sy0, cx + sx0 + cw, cy + sy0 + ch
-        # chỉ nhận thành phần chạm vào bbox gốc và không phủ gần hết vùng tìm (tức là cả cảnh đổi)
-        touches = gx0 < px[2] and gx1 > px[0] and gy0 < px[3] and gy1 > px[1]
-        if touches and area > 0.05 * w * h and cw * ch < 0.9 * (sx1 - sx0) * (sy1 - sy0):
-            px = [min(px[0], gx0 - 4), min(px[1], gy0 - 4), max(px[2], gx1 + 4), max(px[3], gy1 + 4)]
-    return (max(0, px[0]), max(0, px[1]), min(info.width, px[2]), min(info.height, px[3]))
-
-
 def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: VideoInfo, frame_at) -> list[Region]:
-    """Chuyển action của planner thành vùng pixel; mọi xoá đều là làm mờ (không inpaint).
-    replace_text vẫn vẽ text mới đè lên vùng đã làm mờ."""
+    """Chuyển action của planner thành vùng pixel: caption xoá/thay blur strip nhỏ, nội dung 18+ blend
+    video meme full-frame theo alpha, replace_text vẽ text mới đè lên vùng đã làm mờ."""
     regions = []
     for a in actions:
         if a["type"] in ("remove_text", "replace_text"):
@@ -287,9 +316,11 @@ def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: Video
             reg.overlay, reg.overlay_xy = img, xy
             regions.append(reg)
         elif a["type"] == "remove_region":
-            box = _refine_region(a, info, frame_at)
-            x0, y0, x1, y1 = box
-            regions.append(Region(max(0.0, a["start"] - TIME_PAD), min(info.duration, a["end"] + TIME_PAD), box, "blur"))
+            # nội dung 18+: phủ lớp video meme alpha blending trên TOÀN KHUNG HÌNH trong [start, end] —
+            # cả 2 video cùng chạy đồng thời, không split-screen/piP/cắt. bbox của planner không còn ý nghĩa.
+            alpha = min(1.0, max(0.05, float(a.get("alpha") or settings.cover_alpha)))
+            regions.append(Region(max(0.0, a["start"] - TIME_PAD), min(info.duration, a["end"] + TIME_PAD),
+                                  (0, 0, info.width, info.height), "blend", alpha=alpha))
     return regions
 
 
@@ -307,10 +338,19 @@ def _composite(img: np.ndarray, overlay: np.ndarray, xy: tuple[int, int]) -> np.
     return img
 
 
-def _apply(frame: np.ndarray, t: float, regions: list[Region]) -> np.ndarray:
+def _apply(frame: np.ndarray, t: float, regions: list[Region], cover: "CoverLayer | None" = None) -> np.ndarray:
     active = [r for r in regions if r.start <= t < r.end]
     if not active:
         return frame
+    # lớp blend trước tiên (full-frame): out = alpha*B + (1-alpha)*A, alpha ramp mềm ở 2 đầu khoảng
+    # để không pop khung hình; text/disclaimer vẽ sau cùng nên vẫn sắc nét trên lớp blend
+    if cover is not None:
+        for r in active:
+            if r.method == "blend":
+                ramp = min(1.0, (t - r.start) / 0.35, (r.end - t) / 0.35)
+                a = r.alpha * max(0.0, ramp)
+                if a > 0.005:
+                    frame = cv2_add_weighted(cover.frame(t), a, frame)
     for r in active:
         if r.method == "blur":
             frame = blur(frame, r.box)
@@ -318,6 +358,13 @@ def _apply(frame: np.ndarray, t: float, regions: list[Region]) -> np.ndarray:
         if r.overlay is not None:
             frame = _composite(frame, r.overlay, r.overlay_xy)
     return frame
+
+
+def cv2_add_weighted(top: np.ndarray, alpha: float, bottom: np.ndarray) -> np.ndarray:
+    """out = alpha*top + (1-alpha)*bottom, per-pixel, cùng kích thước — bản float32 rồi cast về uint8."""
+    import cv2
+
+    return cv2.addWeighted(top, alpha, bottom, 1.0 - alpha, 0)
 
 
 def _gray_frames(video: Path, info: VideoInfo, t0: float, t1: float) -> tuple[np.ndarray, np.ndarray]:
@@ -417,6 +464,7 @@ def render(video: Path, audio_wav: Path | None, out: Path, info: VideoInfo, regi
     if ctx := runctx.current():
         ctx.register(dec)
         ctx.register(enc)
+    cover = CoverLayer(w, h) if any(r.method == "blend" for r in regions) else None
     try:
         i = 0
         while len(buf := dec.stdout.read(size)) == size:
@@ -427,7 +475,7 @@ def render(video: Path, audio_wav: Path | None, out: Path, info: VideoInfo, regi
             if any(s <= t < e for s, e in cuts):
                 continue
             frame = np.frombuffer(buf, np.uint8).reshape(h, w, 3)
-            enc.stdin.write(_apply(frame.copy(), t, regions).tobytes() if regions else buf)
+            enc.stdin.write(_apply(frame.copy(), t, regions, cover).tobytes() if regions else buf)
     finally:
         # exception giữa chừng (vd enc chết làm gãy pipe) thì dec vẫn đang ghi vào pipe không ai đọc:
         # chờ wait() sẽ treo vĩnh viễn, phải giết process không thoát kịp

@@ -37,7 +37,7 @@ tuỳ chọn XTTS-v2; mẫu từ chính vocal stem) → OmniVoice `duration` / a
   chọn tool: fix_audio / sync_captions / replace_text / remove_text / remove_region / cut / unfixable. Guardrail: vi phạm ở
   bản chất sản phẩm (cờ bạc, app trả tiền khi xem) → unfixable, không che/né.
 - `app/vision.py`: EasyOCR 2fps → text track (gộp box cùng vị trí + nội dung; frame tĩnh dùng lại kết quả OCR).
-- `app/video_edit.py`: không còn inpaint — mọi vùng xoá đều làm mờ (blur), replace_text vẽ text mới đè lên vùng đã mờ;
+- `app/video_edit.py`: remove_region = alpha blending 2 video full-frame (`CoverLayer` Ken Burns từ meme trong `app/assets/overlays/*.jpg|png`, random mỗi render; `out = alpha*B + (1-alpha)*A`, alpha mặc định `settings.cover_alpha`=0.5, planner override per-action, ramp 0.35s 2 đầu) — chỉ cho nội dung 18+/gore; caption xoá/thay vẫn blur strip nhỏ; footage app/watermark/logo kệ;
   text mới vẽ bằng ffmpeg drawtext (PIL trên Windows không có raqm nên không nối chữ Arab được);
   màu chữ đoán bằng diff với frame sạch + k-means. Video > `MAX_VIDEO_SECONDS` (180s) bị từ chối ngay sau download.
 - `pip install easyocr` kéo torch PyPI ghi đè bản CUDA → luôn cài lại torch/torchvision từ index cu128 sau đó.
@@ -114,7 +114,7 @@ tuỳ chọn XTTS-v2; mẫu từ chính vocal stem) → OmniVoice `duration` / a
 
 ## Quyết định thiết kế hiện tại (11/2026, theo yêu cầu user)
 - **Service không phán xét sản phẩm**: kể cả ngành bị cấm cũng sửa text+sound. Không còn triage, không còn decision `unfixable`.
-- **Blur thay cắt**: video giữ nguyên độ dài, mọi xoá hình đều blur (cut do model hallucinate bị đổi thành blur toàn khung trong `_validate`).
+- **Alpha blending thay cắt/blur**: video giữ nguyên độ dài; remove_region blend video meme full-frame trong đoạn 18+ (cut do model hallucinate cũng thành remove_region trong `_validate`). Planner chỉ cover nội dung 18+/gore — footage app, watermark, logo giữ nguyên kể cả khi mô tả chức năng giả (quyết định vận hành của user).
 - Cache plan/rewrite theo phiên bản prompt: `plan_v{N}_raw.json` (`PLAN_PROMPT_VERSION` trong planner.py), `rewrite_v2.json` — đổi prompt phải tăng version nếu không retry vẫn dùng kết quả cũ.
 - `blur()` vùng lớn phải downscale xuống ~200px trước khi GaussianBlur (kernel tỉ lệ vùng — full-frame k=321 tốn 291ms/frame, downscale còn ~1ms).
 - TTS mỗi câu có thể synth 2-3 lần (raw0 → shorten/lengthen LLM → raw1 → fill). Pass `fill` chỉ chạy khi câu < FILL_BELOW (0.7) khung — đệm kín khung tốn ~3s/câu không đáng.
