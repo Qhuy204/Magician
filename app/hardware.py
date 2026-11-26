@@ -174,3 +174,49 @@ def detect() -> Hardware:
     hw.item_concurrency = settings.item_concurrency or max(2, min(16, len(hw.tts_slots) * 3 + 2))
     log.info("hardware: %s", hw.as_dict())
     return hw
+
+
+# --------------------------------------------------------------- live stats
+_live_cache: dict = {"ts": 0.0, "data": None}
+
+
+def live_stats() -> dict:
+    """CPU/RAM/GPU usage hiện tại (cache 4s — nvidia-smi/pynvml tốn tới ~100ms).
+    GPU chỉ có khi backend NVIDIA; lỗi thì trả phần đọc được."""
+    import time
+
+    now = time.time()
+    if _live_cache["data"] and now - _live_cache["ts"] < 4:
+        return _live_cache["data"]
+    out: dict = {"cpu_percent": round(psutil.cpu_percent(), 1)}
+    vm = psutil.virtual_memory()
+    out["ram_used_gb"] = round((vm.total - vm.available) / GB, 1)
+    out["ram_total_gb"] = round(vm.total / GB, 1)
+    out["ram_percent"] = round(vm.percent, 1)
+    gpus = []
+    try:
+        import pynvml
+
+        pynvml.nvmlInit()
+        for i in range(pynvml.nvmlDeviceGetCount()):
+            h = pynvml.nvmlDeviceGetHandleByIndex(i)
+            mem = pynvml.nvmlDeviceGetMemoryInfo(h)
+            util = pynvml.nvmlDeviceGetUtilizationRates(h)
+            gpus.append({"name": pynvml.nvmlDeviceGetName(h), "util": util.gpu,
+                         "vram_used_gb": round(mem.used / GB, 1), "vram_total_gb": round(mem.total / GB, 1)})
+    except Exception:
+        try:
+            import csv
+            import subprocess
+
+            r = subprocess.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total,name",
+                                "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=5)
+            for row in csv.reader(r.stdout.strip().splitlines()):
+                util, used, total, name = row[0].strip(), float(row[1]), float(row[2]), row[3].strip()
+                gpus.append({"name": name, "util": float(util), "vram_used_gb": round(used / 1024, 1),
+                             "vram_total_gb": round(total / 1024, 1)})
+        except Exception as exc:
+            log.debug("gpu stats unavailable: %s", exc)
+    out["gpus"] = gpus
+    _live_cache.update(ts=now, data=out)
+    return out

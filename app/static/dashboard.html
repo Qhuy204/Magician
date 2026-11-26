@@ -57,6 +57,9 @@ header{display:flex;align-items:center;gap:14px;padding:10px 18px;border-bottom:
 .stat{display:flex;align-items:center;gap:6px;background:var(--raised);border:1px solid var(--border-soft);border-radius:999px;padding:4px 11px;font-size:.76rem;color:var(--muted)}
 .stat b{color:var(--ink);font-weight:600;font-family:var(--mono);font-size:.78rem}
 .stat .dot{width:7px;height:7px;border-radius:50%}
+.meter{display:inline-block;width:52px;height:5px;background:var(--bg);border-radius:99px;overflow:hidden;vertical-align:middle}
+.meter i{display:block;height:100%;border-radius:99px;background:var(--done);transition:width .5s}
+.meter.warn i{background:var(--partial)} .meter.hot i{background:var(--fail)}
 .dot-ok{background:var(--done)} .dot-warn{background:var(--partial)} .dot-bad{background:var(--fail)}
 .hdr-actions{display:flex;gap:8px;align-items:center}
 .toggle{display:flex;align-items:center;gap:7px;font-size:.78rem;color:var(--muted);cursor:pointer;user-select:none}
@@ -361,19 +364,24 @@ async function loadDetail(id, keepOpen){
 }
 
 /* ============ render: status ============ */
+function meter(pct){
+  const cls=pct>=90?'hot':pct>=70?'warn':'';
+  return `<span class="meter ${cls}"><i style="width:${Math.min(100,pct)}%"></i></span>`;
+}
 function renderStatus(st){
-  const sc=st.scheduler||{}, tts=st.tts_pool||{}, hw=st.hardware||{};
+  const sc=st.scheduler||{}, tts=st.tts_pool||{}, live=st.live||{};
   const nWorkers=(tts.workers||[]).length, nAlive=(tts.workers||[]).filter(w=>w.alive).length;
-  const gpu=(hw.gpu_names&&hw.gpu_names[0])||'CPU';
-  const vram=(hw.vram_free_gb&&hw.vram_free_gb[0]!=null)? ' · '+hw.vram_free_gb[0].toFixed(1)+'G VRAM' : '';
   const errs=Object.entries(sc.errors_last_hour||{});
   const errHtml=errs.length? `<span class="stat" style="color:var(--fail)">Lỗi 1h: ${errs.map(([k,v])=>esc(k)+'×'+v).join(' ')}</span>`:'';
   const paused = sc.paused? `<span class="stat"><span class="dot dot-bad"></span>Tạm ngưng nhận job</span>`:'';
+  const gpuHtml=(live.gpus||[]).map((g,i)=>`<span class="stat" title="${esc(g.name)}: ${g.util}% · VRAM ${g.vram_used_gb}/${g.vram_total_gb} GB">GPU${(live.gpus.length>1?i:'')} ${meter(g.util)} <b>${Math.round(g.util)}%</b> · VRAM ${meter(g.vram_used_gb/g.vram_total_gb*100)} <b>${g.vram_used_gb}G</b></span>`).join('');
+  const cpuHtml=live.cpu_percent!=null?`<span class="stat">CPU ${meter(live.cpu_percent)} <b>${Math.round(live.cpu_percent)}%</b></span>`:'';
+  const ramHtml=live.ram_percent!=null?`<span class="stat">RAM ${meter(live.ram_percent)} <b>${live.ram_used_gb}/${live.ram_total_gb}G</b></span>`:'';
   $('#statusStrip').innerHTML = `
     <span class="stat"><span class="dot dot-ok"></span>Server<b>hoạt động</b></span>
     <span class="stat">Đang chạy <b>${sc.running??0}</b> · chờ <b>${sc.pending??0}</b></span>
-    <span class="stat">TTS <b>${nAlive}/${nWorkers}</b> ${esc(tts.engine||'')}</span>
-    <span class="stat mono">${esc(gpu)}${esc(vram)}</span>${paused}${errHtml}`;
+    <span class="stat">TTS <b>${nAlive}/${nWorkers}</b></span>
+    ${cpuHtml}${ramHtml}${gpuHtml}${paused}${errHtml}`;
 }
 
 /* ============ render: job list ============ */

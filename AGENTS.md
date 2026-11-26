@@ -111,3 +111,11 @@ tuỳ chọn XTTS-v2; mẫu từ chính vocal stem) → OmniVoice `duration` / a
 - `GET /jobs` list entry KHÔNG có `items` — chỉ có `progress{total,finished,<state>}`; item đầy đủ ở `GET /jobs/{id}`.
 - Event ts là epoch float (không phải ISO), kind/message/data/smart_ad_id.
 - Harness render test giữ trong repo: `node scripts/dashboard_test.mjs` (cần service đang chạy + .env có API_KEYS).
+
+## Quyết định thiết kế hiện tại (11/2026, theo yêu cầu user)
+- **Service không phán xét sản phẩm**: kể cả ngành bị cấm cũng sửa text+sound. Không còn triage, không còn decision `unfixable`.
+- **Blur thay cắt**: video giữ nguyên độ dài, mọi xoá hình đều blur (cut do model hallucinate bị đổi thành blur toàn khung trong `_validate`).
+- Cache plan/rewrite theo phiên bản prompt: `plan_v{N}_raw.json` (`PLAN_PROMPT_VERSION` trong planner.py), `rewrite_v2.json` — đổi prompt phải tăng version nếu không retry vẫn dùng kết quả cũ.
+- `blur()` vùng lớn phải downscale xuống ~200px trước khi GaussianBlur (kernel tỉ lệ vùng — full-frame k=321 tốn 291ms/frame, downscale còn ~1ms).
+- TTS mỗi câu có thể synth 2-3 lần (raw0 → shorten/lengthen LLM → raw1 → fill). Pass `fill` chỉ chạy khi câu < FILL_BELOW (0.7) khung — đệm kín khung tốn ~3s/câu không đáng.
+- `/status` có `live` (cpu/ram/gpu util), cache 4s — dashboard hiển thị meter. GPU stats qua pynvml (nvidia-ml-py), fallback nvidia-smi.

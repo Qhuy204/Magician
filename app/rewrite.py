@@ -22,7 +22,7 @@ Rules:
   YOUR OWN WhatsApp chats, photos and videos to a new phone; a call app: call filtering, caller ID, spam blocking.
 - The rewrite must not hint at the removed capability (no "see anyone's chats", "check what they say", "no one will
   know", references to someone else's number or account).
-- If the ad cannot be made compliant without changing what the product is, return no edits and explain in notes.
+- Always rewrite the violating lines toward the product's legitimate function, even when the violation is about the product category itself: the new voice-over simply describes only legitimate use.
 - Write new_text in the SAME language and dialect as the original (e.g. Gulf Arabic stays Gulf Arabic, Hindi stays Hindi in Devanagari, Brazilian Portuguese stays pt-BR).
 - Each rewrite must be speakable in the same time as the original: new_text must be at most max_chars characters
   and at least min_chars characters. The presenter keeps talking on screen, so a much shorter line leaves visible

@@ -20,7 +20,7 @@ from . import media, policies, recheck, runctx, video_edit, vision
 from .errors import InvalidInput
 from .config import settings
 from .rewrite import lengthen, plan_edits, shorten
-from .planner import plan_fix, triage
+from .planner import PLAN_PROMPT_VERSION, plan_fix
 from .schemas import AdItem, Edit, ItemResult, ReviewReason
 from .separation import separate
 from .transcribe import transcribe
@@ -154,6 +154,8 @@ def _speaker_refs(vocals: np.ndarray, sr: int, segments: list[dict], work: Path)
 # Câu mới ngắn hơn tỉ lệ này của khung thì viết dài ra / đọc chậm lại (người nói vẫn mấp máy môi trên hình)
 MIN_FILL = 0.75
 TARGET_FILL = 0.92
+# chỉ synth thêm lần "fill" khi câu ngắn hơn tỉ lệ này của khung (fill tốn ~3s/câu)
+FILL_BELOW = 0.7
 MAX_SLOWDOWN = 1.2
 
 
@@ -192,8 +194,9 @@ def _render_edit(
         # OmniVoice đọc nhanh tự nhiên cho vừa khung thay vì tăng tốc audio
         need = synth("fit", round(slot, 2))
         edit.fit = "duration"
-    elif need < TARGET_FILL and supports_duration():
-        # vẫn ngắn: đọc chậm lại một chút (tối đa MAX_SLOWDOWN) cho gần kín khung
+    elif need < FILL_BELOW and supports_duration():
+        # ngắn hơn hẳn khung (môi người nói mấp máy mà không có tiếng): đọc chậm lại cho gần kín khung.
+        # Chỉ synth thêm 1 lần khi thiếu nhiều — còn thiếu ít thì kệ, rẻ hơn ~3s/câu
         need = synth("fill", round(min(slot * 0.97, need * slot * MAX_SLOWDOWN), 2))
         edit.fit = "duration"
     edit.tempo = round(min(max(need, 1.0), settings.max_tempo), 3)
@@ -310,7 +313,7 @@ def _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cac
     with timed("rewrite"):
         script_key = _digest(json.dumps([language, reason_lines, [x["text"] for x in segments], product], ensure_ascii=False))
         audio_plan = cache.get(("rewrite", script_key), lambda: _persisted(
-            work / "rewrite.json", lambda: plan_edits(client, segments, language, reason_lines, hint, product, policy)))
+            work / "rewrite_v2.json", lambda: plan_edits(client, segments, language, reason_lines, hint, product, policy)))
     if not audio_plan["edits"]:
         return new_vocals
     by_id = {s["id"]: s for s in segments}
@@ -341,9 +344,9 @@ def _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cac
     return new_vocals
 
 
-def _ocr_and_triage(ctx: dict, video: Path, work: Path, segments, language, planner_frames, video_key):
-    """OCR chạy nền (cần ngôn ngữ để chọn bộ chữ), song song với lượt triage. Trả (quick, tracks)."""
-    result, cache, client, timed = ctx["result"], ctx["cache"], ctx["client"], ctx["timed"]
+def _ocr(ctx: dict, video: Path, work: Path, language, video_key):
+    """OCR text trên màn hình (cần ngôn ngữ để chọn bộ chữ), có cache theo video."""
+    result, cache, timed = ctx["result"], ctx["cache"], ctx["timed"]
     stop_ocr = threading.Event()
     if rc := runctx.current():
         rc.on_kill(stop_ocr.set)
@@ -361,24 +364,8 @@ def _ocr_and_triage(ctx: dict, video: Path, work: Path, segments, language, plan
             tracks_file.write_bytes(pickle.dumps(tracks))
         return tracks
 
-    with ThreadPoolExecutor(1) as bg:
-        ocr_future = bg.submit(lambda: cache.get(("ocr", video_key), run_ocr))
-        quick = {"decision": "fix"}
-        if ctx["pass_no"] == 1:
-            with timed("triage"):
-                quick = cache.get(("triage", video_key, tuple(result.reject_reasons), ctx["declared"]), lambda: _persisted(
-                    work / "triage.json", lambda: triage(client, ctx["reasons"], segments, planner_frames,
-                                                         ctx["violation_images"], ctx["hint"], ctx["declared"],
-                                                         ctx["policy"])))
-        if quick["decision"] == "unfixable":
-            stop_ocr.set()
-            return quick, []
-        with runctx.stage("ocr"):
-            while True:
-                try:
-                    return quick, ocr_future.result(timeout=1)
-                except TimeoutError:
-                    runctx.check()
+    with runctx.stage("ocr"):
+        return cache.get(("ocr", video_key), run_ocr)
 
 
 def _merge_overlays(actions: list[dict], language: str | None) -> list[dict]:
@@ -421,20 +408,13 @@ def _fix_pass(ctx: dict, video: Path, work: Path, out_path: Path, feedback: list
         result.language = result.language or language
 
     planner_frames = _even(vision.sample_frames(video, settings.planner_fps, 384), settings.max_planner_frames)
-    quick, tracks = _ocr_and_triage(ctx, video, work, segments, language, planner_frames, video_key)
-    if quick["decision"] == "unfixable":
-        result.plan = {"decision": "unfixable", "reason": quick["reason"], "product": quick.get("product", ""),
-                       "stage": "triage"}
-        result.policy_findings = [{"reason_index": i, "group": (gs or [None])[0], "verdict": "unfixable",
-                                   "fix": quick["reason"]} for i, gs in enumerate(ctx["groups"])]
-        result.state, result.error = "no_changes", quick["reason"] or "không sửa được bằng cách chỉnh video"
-        return False
+    tracks = _ocr(ctx, video, work, language, video_key)
     track_map = {t.id: t for t in tracks}
 
     with timed("plan"):
-        plan_key = _digest(json.dumps([video_key, [r.model_dump() for r in reasons], declared, feedback],
+        plan_key = _digest(json.dumps([PLAN_PROMPT_VERSION, video_key, [r.model_dump() for r in reasons], declared, feedback],
                                       ensure_ascii=False))
-        plan = cache.get(("plan", plan_key), lambda: _persisted(work / "plan_raw.json", lambda: plan_fix(
+        plan = cache.get(("plan", plan_key), lambda: _persisted(work / f"plan_v{PLAN_PROMPT_VERSION}_raw.json", lambda: plan_fix(
             client, reasons, info.duration, segments, language, tracks, planner_frames, ctx["violation_images"], hint,
             declared, ctx["policy"], feedback)))
     if ctx["pass_no"] == 1:

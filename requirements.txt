@@ -20,3 +20,4 @@ easyocr==1.7.2
 opencv-python-headless==5.1.0.95
 pillow==13.0.0
 pyyaml==6.0.4
+nvidia-ml-py==13.615.71

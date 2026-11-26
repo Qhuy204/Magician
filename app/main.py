@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 
 from . import logsetup
 from .config import settings
-from .hardware import detect
+from .hardware import detect, live_stats
 from .jobs import manager
 from .schemas import CancelRequest, Job, JobRequest, RetryRequest
 from .security import AuthError, authenticate, check_public_url, verify_file_path
@@ -241,7 +241,7 @@ async def status():
     from .tts import pool
 
     return {"ready": _ready_checks(), "scheduler": manager.stats(), "hardware": detect().as_dict(),
-            "tts_pool": pool.stats()}
+            "tts_pool": pool.stats(), "live": live_stats()}
 
 
 @app.get("/metrics", response_class=PlainTextResponse)

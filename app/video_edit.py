@@ -35,8 +35,17 @@ def blur(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
     x0, y0, x1, y1 = box
     res = img.copy()
     region = res[y0:y1, x0:x1]
-    k = max(15, (max(region.shape[:2]) // 4) | 1)
-    res[y0:y1, x0:x1] = cv2.GaussianBlur(region, (k, k), 0)
+    h, w = region.shape[:2]
+    if max(h, w) > 200:
+        # vùng lớn: blur ở độ phân giải giảm — kernel tỉ lệ theo vùng nên full-frame trước đây tốn ~300ms/frame,
+        # downscale xuống ~200px rồi blur + upscale cho cùng độ mờ với ~1ms/frame
+        f = 200 / max(h, w)
+        small = cv2.resize(region, (max(1, round(w * f)), max(1, round(h * f))), interpolation=cv2.INTER_AREA)
+        ks = max(9, (max(small.shape[:2]) // 4) | 1)
+        res[y0:y1, x0:x1] = cv2.resize(cv2.GaussianBlur(small, (ks, ks), 0), (w, h), interpolation=cv2.INTER_LINEAR)
+    else:
+        k = max(15, (max(h, w) // 4) | 1)
+        res[y0:y1, x0:x1] = cv2.GaussianBlur(region, (k, k), 0)
     return res
 
 

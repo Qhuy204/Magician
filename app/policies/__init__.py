@@ -34,8 +34,6 @@ class Group:
     def brief(self) -> dict:
         """Phần đưa vào prompt."""
         d = {"group": self.id, "name": self.name, "kind": self.kind, "rules": self.rules}
-        if self.product_unfixable:
-            d["unfixable_if_product_is"] = self.product_unfixable
         if self.disclaimers:
             d["disclaimers"] = self.disclaimers
         if self.min_age:

@@ -32,11 +32,10 @@ dùng công cụ nào dựa trên lý do reject và danh mục policy TikTok (`a
 | 1 | Tải `video_url` (chỉ domain trong allowlist, tối đa 300MB). Video dài quá `MAX_VIDEO_SECONDS` (mặc định 180s) bị từ chối ngay (`invalid_input`) | httpx |
 | 2 | **Phân loại policy**: mỗi lý do reject → nhóm policy TikTok (20 nhóm + Pangle), lấy playbook của nhóm đó | Từ khoá trong catalog, không chắc thì hỏi `VISION_MODEL` |
 | 3 | Tách giọng nói khỏi nhạc nền, cắt câu theo khoảng lặng, transcribe từng câu | Demucs `htdemucs` + OpenAI `gpt-transcribe` |
-| 4 | **Triage**: sản phẩm thuộc loại bị cấm thì dừng ngay (chạy song song với OCR) | `VISION_MODEL` + frame 1 giây/lần |
-| 5 | OCR text trên màn hình, gom thành "text track" (nội dung, vị trí, thời gian) | EasyOCR (GPU) |
-| 6 | **Planner** chọn công cụ cho từng vi phạm theo playbook, kết luận cho từng lý do reject, liệt kê việc ngoài video | `VISION_MODEL` |
-| 7 | Sửa voice-over nếu cần: viết lại câu vi phạm, clone giọng, ghép lại | `gpt-6-luna` + OmniVoice / XTTS |
-| 8 | Sửa hình: làm mờ text/pop-up/logo/QR/watermark vi phạm, vẽ text mới đè lên vùng đã mờ, cắt đoạn (mốc cắt tự dời về ranh giới cảnh), chèn disclaimer, nhãn "AI-generated voice" | blur, ffmpeg drawtext |
+| 4 | OCR text trên màn hình, gom thành "text track" (nội dung, vị trí, thời gian) | EasyOCR (GPU) |
+| 5 | **Planner** chọn công cụ cho từng vi phạm theo playbook, kết luận cho từng lý do reject, liệt kê việc ngoài video | `VISION_MODEL` |
+| 6 | Sửa voice-over nếu cần: viết lại câu vi phạm, clone giọng, ghép lại | `gpt-6-luna` + OmniVoice / XTTS |
+| 7 | Sửa hình: làm mờ text/pop-up/logo/QR/watermark/cảnh vi phạm, vẽ text mới đè lên vùng đã mờ, chèn disclaimer, nhãn "AI-generated voice". Video không bao giờ bị cắt ngắn | blur, ffmpeg drawtext |
 | 9 | Encode lại video (hoặc chỉ thay audio nếu hình không đổi) | ffmpeg / libx264 |
 | 10 | **Recheck**: transcribe audio mới + xem frame video kết quả, đối chiếu lý do reject. Còn vi phạm thì sửa thêm 1 lượt, vẫn còn thì `needs_review` | `gpt-transcribe` + `VISION_MODEL` |
 | 11 | Viết lại caption (`ad_text`), kiểm tra landing page (`landing_page_url`) nếu request có | `REWRITE_MODEL`, httpx |
@@ -49,11 +48,11 @@ Công cụ planner có thể chọn:
 | `sync_captions` | Có phụ đề in sẵn lặp lại lời thoại | Phụ đề của câu bị sửa được thay bằng câu mới, cùng vị trí / màu / cỡ chữ |
 | `replace_text` | Text vi phạm có cách nói hợp lệ, text sai chính tả / viết hoa / ký hiệu loạn | Làm mờ text cũ, vẽ text mới đè lên cùng vị trí, màu chữ + viền lấy từ text cũ |
 | `remove_text` | Text vi phạm, không cần thay | Làm mờ text |
-| `remove_region` | Pop-up, banner, số tiền, badge, QR code, nút giả, dữ liệu cá nhân, **watermark/handle/logo bên thứ 3** (kể cả khi lý do reject không nhắc) | Làm mờ vùng. Vùng > 45% khung hình tự đổi thành `cut` |
-| `cut` | Cả shot vi phạm (màn hình rút tiền, cảnh gợi dục, máu me...) | Bỏ đoạn đó khỏi cả hình lẫn tiếng; tổng thời lượng cắt + xoá vùng lớn tối đa `MAX_CUT_RATIO` (35%) |
+| `remove_region` | Pop-up, banner, số tiền, badge, QR code, nút giả, dữ liệu cá nhân, **watermark/handle/logo bên thứ 3** (kể cả khi lý do reject không nhắc), cả cảnh quay vi phạm (màn hình rút tiền, cảnh gợi dục, máu me, footage chức năng giả...) | Làm mờ vùng. Cảnh vi phạm toàn khung thì blur gần hết khung hình — video giữ nguyên độ dài, không bao giờ cắt |
 | `add_disclaimer` | Ngành bắt buộc disclaimer (tài chính, rượu, cờ bạc, sức khoẻ, giảm cân) hoặc promotion cần "Terms apply" | Dòng chữ trên nền mờ ở vùng an toàn, đúng ngôn ngữ của ad (en / es / pt / ar / fr / de / it) |
 | (tự động) nhãn AIGC | Voice-over đã được clone | "AI-generated voice" / "Voz generada con IA"... ở trên cùng, kèm `action_required: aigc_label` |
-| `unfixable` | Sản phẩm thuộc loại bị cấm (spyware, cờ bạc, app trả tiền khi xem/chơi, dịch vụ tình dục...), hoặc nội dung vi phạm chiếm gần hết video | Không sửa, item ra `no_changes` kèm lý do |
+
+**Service không phán xét sản phẩm.** Kể cả khi lý do reject thuộc ngành bị cấm (cờ bạc, spyware, app trả tiền...), pipeline vẫn sửa: viết lại voice-over/text bỏ claim vi phạm, blur hình ảnh mô tả chức năng vi phạm. Sản phẩm có được duyệt hay không là việc của tài khoản quảng cáo, service chỉ làm sạch nội dung creative. Không còn quyết định `unfixable`: item chỉ ra `no_changes` khi video thật sự không có gì để sửa.
 
 ### Policy
 
@@ -63,14 +62,14 @@ Công cụ planner có thể chọn:
   - Có thêm disclaimer theo ngôn ngữ và luật chung áp cho mọi ad.
 - **Luật chung** (bất kể nhóm nào):
   - Không né review bằng nói giảm, viết sai chính tả, che một phần.
-  - **Không blur / pixel hoá để che**: policy Ad format cấm "columns or pixels to partially cover images".
   - Watermark / handle / logo bên thứ 3 trong footage phải được làm mờ. Chỉ khi toàn bộ creative là nội dung có thương hiệu của người khác (trailer phim, quảng cáo của brand khác) thì làm mờ không còn ý nghĩa: `action_required: rights` / `new_creative`.
   - Bỏ nút giả, cảnh báo hệ thống giả, QR code dẫn sang trang ngoài (EU / UK / Trung Đông).
   - Video có giọng clone phải công bố AIGC.
+  - Lưu ý rủi ro đã biết: policy Ad format của TikTok cấm "columns or pixels to partially cover images", trong khi service xoá nội dung vi phạm bằng blur theo yêu cầu vận hành. Vết blur che watermark/logo/caption nhỏ thường vẫn pass, nhưng mảng blur lớn toàn khung có thể bị reviewer chấm lại — đó là trade-off của việc giữ nguyên độ dài video thay vì cắt.
 - **Ngành bị hạn chế theo khu vực / tuổi** (dating, rượu, tài chính, y tế, giảm cân...): làm sạch creative, gợi ý
   `targeting_fix` = loại các `affected_regions` + tuổi tối thiểu. Không sửa video để nó lọt qua ở khu vực mà ngành bị cấm.
 - **Sản phẩm hợp lệ bị ad mô tả sai** (vd app chuyển dữ liệu nhưng ad nói "đọc trộm chat"):
-  - Sửa được: viết lại voice-over theo chức năng thật, chỉ cắt cảnh minh hoạ chức năng giả.
+  - Sửa được: viết lại voice-over theo chức năng thật, blur cảnh minh hoạ chức năng giả.
   - `product` trong request (nếu có) được coi là sự thật về sản phẩm.
 
 Service xoá hẳn claim vi phạm, không diễn đạt lại bằng từ né, không che một nửa, không dời sang chỗ khác để lọt review.
@@ -238,7 +237,7 @@ Field thừa được giữ nguyên, không gây lỗi. Ví dụ format mới:
 | `video_id` / `rejected_video_id`, `preview_video_id` | | Khớp reject reason của TikTok với đúng video; cũng dùng để nhận ra ad gửi trùng |
 | `reasons` / `reject_reasons` | | Mỗi phần tử là chuỗi hoặc object `{category, detail, timestamps, affected_regions, affected_placements, violation_frames}`. `timestamps` dạng `"0:22–0:24"` giúp planner tìm đúng chỗ. Có thì dùng luôn, không gọi TikTok API |
 | `violation_frames` | | URL ảnh frame vi phạm (nếu có); planner nhìn ảnh để xác định phần bị flag |
-| `product` | | Sản phẩm thật đang quảng cáo, vd `"Shieldy - call app: caller ID, chặn cuộc gọi rác"`. Đặt ở cấp job hoặc từng ad (ad ghi đè job). Planner coi đây là sự thật: creative lấy từ nơi khác (footage app hẹn hò, theo dõi người yêu...) thì các cảnh đó bị blur / cắt, voice-over viết lại theo sản phẩm này. Vẫn `unfixable` nếu footage sai chiếm phần lớn video (cắt hoặc xoá vùng > 30% khung quá `MAX_CUT_RATIO` thời lượng) hoặc chính sản phẩm bị cấm |
+| `product` | | Sản phẩm thật đang quảng cáo, vd `"Shieldy - call app: caller ID, chặn cuộc gọi rác"`. Đặt ở cấp job hoặc từng ad (ad ghi đè job). Planner coi đây là sự thật: creative lấy từ nơi khác (footage app hẹn hò, theo dõi người yêu...) thì các cảnh đó bị blur, voice-over viết lại theo sản phẩm này |
 | `ad_text` (alias `ad_texts[0]`, `caption`, `ad_caption`) | | Caption của ad: được viết lại theo policy, trả về `ad_text_fix` |
 | `landing_page_url` (alias `landing_url`, `landing_page`, `click_url`, `store_url`, `app_url`, `deeplink`) | | Trang đích: được kiểm tra, trả về `landing_page` |
 | `call_to_action` | | CTA, dùng khi viết lại caption |
@@ -294,7 +293,7 @@ Response `202`:
       "output_video_url": "https://magician.qhuy204.id.vn/files/02bb.../1882107813581906.mp4?exp=1795600000&sig=...",
       "error": null,
       "usage": {"transcribe_calls": 5, "transcribe_seconds": 15, "chat_calls": 3, "chat_prompt_tokens": 7350, "chat_completion_tokens": 924},
-      "timings": {"download": 0.3, "separate": 1.2, "transcribe": 1.1, "triage": 3.3, "ocr": 7.2, "plan": 7.4, "rewrite": 2.6, "tts": 6.0, "render": 2.4},
+      "timings": {"download": 0.3, "separate": 1.2, "transcribe": 1.1, "ocr": 7.2, "plan": 7.4, "rewrite": 2.6, "tts": 6.0, "render": 2.4},
       "plan": {
         "decision": "fix", "reason": "...", "fix_audio": true, "sync_captions": true,
         "visual_actions": [{"type": "remove_region", "start": 3.0, "end": 5.0, "bbox": [0.17, 0.44, 0.83, 0.53], "what": "Red 500 SAR prize pop-up"}],
@@ -328,10 +327,10 @@ Trạng thái item:
 | `state` | Ý nghĩa |
 |---|---|
 | `pending` | Đang chờ trong hàng đợi |
-| `running` | Đang xử lý; `stage` là bước hiện tại (`download`, `separate`, `transcribe`, `triage`, `ocr`, `plan`, `rewrite`, `tts`, `render`, `mux`) |
+| `running` | Đang xử lý; `stage` là bước hiện tại (`download`, `separate`, `transcribe`, `ocr`, `plan`, `rewrite`, `tts`, `render`, `mux`) |
 | `retrying` | Lỗi tạm thời, tự chạy lại lúc `next_retry_at` |
 | `done` | Có video mới ở `output_video_url` |
-| `no_changes` | Không sửa; lý do nằm trong `error` và `plan`. `error_code = "unfixable"` khi vi phạm ở bản chất sản phẩm, `"no_changes"` khi lý do khác (thiếu reason, cần cắt quá nhiều...) |
+| `no_changes` | Không sửa (video không có gì vi phạm để sửa, hoặc vi phạm hoàn toàn ngoài video); lý do nằm trong `error` và `plan` |
 | `skipped` | `status` không thuộc `process_statuses`, hoặc trùng ad đang chạy (`duplicate_of`) |
 | `failed` | Lỗi và đã hết lượt tự retry, xem `error_code` / `error`. `retryable: true` = gọi `/retry` có thể thành công |
 | `cancelled` | Bị huỷ qua `/cancel` |
@@ -374,7 +373,7 @@ State liên quan:
 - `partial`: video đã sửa và recheck đạt, nhưng còn việc ngoài video trong `action_required` (targeting, caption, landing page, chứng nhận...).
 - `needs_review`: đã sửa 2 lượt mà recheck vẫn thấy vấn đề. Vẫn có `output_video_url`, vấn đề nằm trong `compliance_check.issues` và `error`.
 - `no_changes` + `error_code`:
-  - `unfixable`: sản phẩm bị cấm.
+  - `unfixable`: không còn dùng (service không phán xét sản phẩm).
   - `outside_video`: video không cần sửa, chỉ phải làm việc ngoài video.
   - `no_changes`: các trường hợp khác.
 
@@ -413,9 +412,9 @@ Body (tùy chọn, bỏ trống = retry mọi item `failed` / `cancelled`):
 }
 ```
 - `video_urls`: link mới cho item `source_expired`. Đổi link thì toàn bộ file tạm của item bị xoá, chạy lại từ đầu.
-- `reasons`: ghi đè reject reasons (kết quả triage/plan/rewrite cũ bị bỏ).
-- `product` / `visual_method` / `ad_text` / `landing_page_url`: ghi đè cho các item được retry (đổi `product` thì bỏ kết quả triage/plan/rewrite cũ).
-- `force: true` + `smart_ad_ids`: chạy lại cả item `done` / `no_changes` / `skipped` (bỏ kết quả triage/plan/rewrite, giữ video + transcript).
+- `reasons`: ghi đè reject reasons (kết quả plan/rewrite cũ bị bỏ).
+- `product` / `visual_method` / `ad_text` / `landing_page_url`: ghi đè cho các item được retry (đổi `product` thì bỏ kết quả plan/rewrite cũ).
+- `force: true` + `smart_ad_ids`: chạy lại cả item `done` / `no_changes` / `skipped` (bỏ kết quả plan/rewrite, giữ video + transcript).
 - `200 {"retried": [...], "state": "running"}`; `409` nếu không có item nào retry được.
 
 ### POST /jobs/{job_id}/cancel
@@ -556,9 +555,8 @@ Khuyến nghị thêm ở phía Cloudflare: WAF rule chỉ cho IP của dashboar
 | `MAX_TTS_PER_GPU` | `4` | |
 | `ITEM_CONCURRENCY` | `0` (tự tính) | Số item xử lý song song trên toàn server |
 | `MAX_TEMPO` | `1.3` | Tốc độ đọc tối đa để vừa khung thời gian cũ |
-| `VISION_MODEL` | `gpt-6-luna` | Model đọc frame, triage + lập kế hoạch sửa (phải nhận ảnh) |
+| `VISION_MODEL` | `gpt-6-luna` | Model đọc frame + lập kế hoạch sửa (phải nhận ảnh) |
 | `OCR_FPS` / `PLANNER_FPS` / `MAX_PLANNER_FRAMES` | `2` / `1` / `60` | Mật độ frame cho OCR và cho planner |
-| `MAX_CUT_RATIO` | `0.35` | Thời lượng cắt + thời lượng xoá vùng lớn (> 30% khung) vượt tỉ lệ này thì coi là không sửa được |
 | `MAX_VIDEO_SECONDS` | `180` | Video dài hơn bị từ chối (`invalid_input`) |
 | `RECHECK` / `RECHECK_RETRY` | `true` / `true` | Kiểm tra lại video sau khi sửa / sửa thêm 1 lượt nếu còn vi phạm |
 | `AIGC_OVERLAY` | `true` | Chèn nhãn "AI-generated voice" khi voice-over được clone |

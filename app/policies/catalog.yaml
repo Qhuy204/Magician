@@ -5,7 +5,7 @@
 # kind:
 #   creative      sửa được trong video (lời thoại, chữ, hình, cắt)
 #   conditional   ngành được phép có điều kiện (tuổi, khu vực, giấy phép, disclaimer): sửa creative + action_required
-#   prohibited    phần lớn sản phẩm trong nhóm bị cấm: sản phẩm thuộc product_unfixable => unfixable
+#   prohibited    phần lớn sản phẩm trong nhóm bị cấm: service vẫn sửa text/sound + blur hình vi phạm, không phán xét sản phẩm
 #   out_of_scope  vi phạm nằm ngoài video (landing page, giao hàng, tài khoản): chỉ action_required
 # region_restricted: true => affected_regions của reason được gợi ý loại khỏi targeting
 version: "2026-11"
@@ -245,7 +245,7 @@ groups:
                wallet balance, reward app, earn by watching, money-making, cash reward, restricted reward app]
     rules:
       - "Gambling (online/offline casinos, sports betting, lotteries, fantasy sports, mystery boxes, rewarded gaming) needs TikTok certification, legal markets only, 18+, mandatory responsible-gambling disclaimers."
-      - "Apps whose core offer is paying users cash for watching/playing are restricted reward apps: unfixable without certification."
+      - "Apps whose core offer is paying users cash for watching/playing are restricted reward apps: remove cash/reward claims and visuals from the video."
       - "Social casino games without real-money prizes: no cash-out imagery; promotions need clear terms."
       - "Not allowed: false offers, underage audiences or people, failing transparency requirements."
     disclaimers: [gambling_responsible]
@@ -279,7 +279,7 @@ groups:
       - "No TikTok logo, 'TikTok Bestseller' or implied TikTok/ByteDance endorsement: obscure with method 'blur' or remove."
       - "Watermarks / creator handles from any platform must be blurred even when no rejection reason mentions them."
       - "Only when the entire creative is third-party branded content (film trailer, another brand's commercial) does obscuring not help: action_required rights / new_creative."
-      - "Counterfeit / replica products: unfixable."
+      - "Counterfeit / replica products: remove brand-imitation claims and logos from the video."
     product_unfixable: [counterfeit goods, replicas, pirated digital products]
     out_of_video: [rights]
 

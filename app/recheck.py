@@ -18,9 +18,11 @@ You get the original rejection reasons, the TikTok policy playbooks ("policy"), 
 video, the edits that were applied, and frames of the edited video (one per second, labelled with timestamps).
 Decide whether the edited VIDEO still violates any rejection reason or global rule. Ignore what is outside the video
 (targeting, landing page, licenses, AIGC label setting): those are handled separately.
-Also flag problems the editing introduced: visible smudge/blur patches where something was erased, half-erased or
-garbled text, blurred or pixelated areas (covering images with blur/pixels is itself a violation), a disclaimer that is
-unreadable, a voice-over that still states the violating claim, or captions that contradict the new voice-over.
+Blurring is the intended removal method of this editor: every blur patch listed in "applied_visual_edits" is
+intentional. Do NOT flag the existence of blur patches. DO flag when the violation is still readable or recognizable
+through or outside the blur (blur too small, too short, or too weak), when text was half-erased or left garbled, when
+a disclaimer is unreadable, when the voice-over still states the violating claim, or when captions contradict the new
+voice-over.
 Judge the video as a whole with its NEW voice-over: ordinary app screens (chat lists, conversations, photos) are not
 violations by themselves when the new voice-over presents them as the user's own data; flag only what still states or
 depicts the violation (e.g. typing another person's number to unlock their data, "spy"/"hack" text, the old claim).
