@@ -17,7 +17,7 @@ from openai import OpenAI
 
 from . import media, runctx, video_edit, vision
 from .config import settings
-from .rewrite import plan_edits, shorten
+from .rewrite import lengthen, plan_edits, shorten
 from .planner import plan_fix, triage
 from .schemas import AdItem, Edit, ItemResult, ReviewReason
 from .separation import separate
@@ -149,15 +149,22 @@ def _speaker_refs(vocals: np.ndarray, sr: int, segments: list[dict], work: Path)
     return [ref], " ".join(s["text"] for s in chosen)
 
 
+# Câu mới ngắn hơn tỉ lệ này của khung thì viết dài ra / đọc chậm lại (người nói vẫn mấp máy môi trên hình)
+MIN_FILL = 0.75
+TARGET_FILL = 0.92
+MAX_SLOWDOWN = 1.2
+
+
 def _render_edit(
     client: OpenAI, edit: Edit, language: str, refs: list[Path], ref_text: str, slot: float,
-    work: Path, idx: int, cache: JobCache, voice_key: str,
+    work: Path, idx: int, cache: JobCache, voice_key: str, product: str | None = None,
 ) -> np.ndarray:
     fitted = work / f"tts_{idx}.wav"
 
     def synth(tag: str, duration: float | None = None) -> float:
         """Sinh giọng, trim silence, trả về tỉ lệ độ dài so với khung (>1 = dài hơn khung)."""
-        text, out = edit.new_text, work / f"tts_{idx}_{tag}.wav"
+        text = edit.new_text
+        out = work / f"tts_{idx}_{tag}_{_digest(json.dumps([text, language, duration, voice_key]))[:10]}.wav"
         raw = cache.get(("tts", voice_key, language, text, duration),
                         lambda: synthesize(text, language, refs, out, ref_text, duration))
         media.condition_tts(raw, fitted)
@@ -172,9 +179,20 @@ def _render_edit(
         text = edit.new_text
         edit.new_text = cache.get(("shorten", voice_key, text), lambda: shorten(client, text, language, max_chars))
         need = synth("raw1")
+    elif need < MIN_FILL:
+        text, limit = edit.new_text, len(edit.original_text)
+        min_chars = min(limit, int(len(text) * TARGET_FILL / max(need, 0.05)))
+        edit.new_text = cache.get(("lengthen", voice_key, text),
+                                  lambda: lengthen(client, text, language, min_chars, limit, product))
+        if edit.new_text != text:
+            need = synth("raw1")
     if need > 1.0 and supports_duration():
         # OmniVoice đọc nhanh tự nhiên cho vừa khung thay vì tăng tốc audio
         need = synth("fit", round(slot, 2))
+        edit.fit = "duration"
+    elif need < TARGET_FILL and supports_duration():
+        # vẫn ngắn: đọc chậm lại một chút (tối đa MAX_SLOWDOWN) cho gần kín khung
+        need = synth("fill", round(min(slot * 0.97, need * slot * MAX_SLOWDOWN), 2))
         edit.fit = "duration"
     edit.tempo = round(min(max(need, 1.0), settings.max_tempo), 3)
     if edit.tempo > 1.0:
@@ -253,6 +271,28 @@ def _caption_actions(edits: list[Edit], tracks: list[vision.TextTrack], taken: s
     return actions
 
 
+def _to_cut(t: float, cuts: list[tuple[float, float]]) -> float:
+    """Thời điểm trên video gốc -> thời điểm trên video đã cắt."""
+    return t - sum(max(0.0, min(t, e) - s) for s, e in cuts)
+
+
+def _from_cut(t: float, cuts: list[tuple[float, float]]) -> float:
+    """Thời điểm trên video đã cắt -> thời điểm trên video gốc."""
+    for s, e in sorted(cuts):
+        if t >= s:
+            t += e - s
+    return t
+
+
+def _remap_segments(segments: list[dict], cuts: list[tuple[float, float]]) -> list[dict]:
+    out = []
+    for seg in segments:
+        s, e = _to_cut(seg["start"], cuts), _to_cut(seg["end"], cuts)
+        if e - s >= 0.2:
+            out.append({**seg, "start": round(s, 3), "end": round(e, 3)})
+    return out
+
+
 def _even(frames: list, limit: int) -> list:
     if len(frames) <= limit:
         return frames
@@ -260,14 +300,15 @@ def _even(frames: list, limit: int) -> list:
     return [frames[int(i * step)] for i in range(limit)]
 
 
-def _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cache, hint, timed) -> np.ndarray:
+def _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cache, hint, timed,
+                       product: str | None = None) -> np.ndarray:
     """Viết lại câu thoại vi phạm, đọc lại bằng giọng clone và ghép vào vocal stem. Trả về vocal mới."""
     reason_lines = result.reject_reasons
     new_vocals = vocals.copy()
     with timed("rewrite"):
-        script_key = _digest(json.dumps([language, reason_lines, [x["text"] for x in segments]], ensure_ascii=False))
+        script_key = _digest(json.dumps([language, reason_lines, [x["text"] for x in segments], product], ensure_ascii=False))
         audio_plan = cache.get(("rewrite", script_key), lambda: _persisted(
-            work / "rewrite.json", lambda: plan_edits(client, segments, language, reason_lines, hint)))
+            work / "rewrite.json", lambda: plan_edits(client, segments, language, reason_lines, hint, product)))
     if not audio_plan["edits"]:
         return new_vocals
     by_id = {s["id"]: s for s in segments}
@@ -285,7 +326,8 @@ def _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cac
             new_text=e["new_text"], reason=e["reason"],
         )
         with timed("tts"):
-            tts = _render_edit(client, edit, language, refs, ref_text, end - start, work, idx, cache, script_key)
+            tts = _render_edit(client, edit, language, refs, ref_text, end - start, work, idx, cache, script_key,
+                               product)
         s, e_ = int(start * sr), int(end * sr)
         target = _rms(vocals[s:e_])
         if target and (cur := _rms(tts)):
@@ -389,14 +431,27 @@ def process_item(
         result.state, result.error = "no_changes", plan["reason"] or "không sửa được bằng cách chỉnh video"
         return
 
+    cuts = sorted((a["start"], a["end"]) for a in plan["visual_actions"] if a["type"] == "cut")
+    audio_is_cut = False
+    if cuts and has_audio and plan["fix_audio"] and segments and language:
+        # Cắt stem trước rồi mới viết lại + TTS: câu mới được sinh vừa khung trên timeline đã cắt,
+        # không bị cắt mất giữa câu như khi cắt audio sau cùng
+        vocals, bgm = video_edit.cut_audio(vocals, sr, cuts), video_edit.cut_audio(bgm, sr, cuts)
+        segments = _remap_segments(segments, cuts)
+        audio_is_cut = True
+
     new_vocals = vocals
     if plan["fix_audio"] and segments and language:
-        new_vocals = _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cache, hint, timed)
+        new_vocals = _rewrite_voiceover(client, result, segments, language, vocals, sr, work, cache, hint, timed,
+                                        plan.get("product"))
 
     actions = list(plan["visual_actions"])
     if plan["sync_captions"] and result.edits:
         taken = {i for a in actions for i in a.get("track_ids", [])}
-        actions += _caption_actions(result.edits, tracks, taken)
+        # text track theo timeline gốc; edit theo timeline đã cắt (nếu đã cắt audio trước)
+        edits = [e.model_copy(update={"start": _from_cut(e.start, cuts), "end": _from_cut(e.end, cuts)})
+                 for e in result.edits] if audio_is_cut else result.edits
+        actions += _caption_actions(edits, tracks, taken)
     if not result.edits and not actions:
         result.state, result.error = "no_changes", plan["notes"] or "planner không đưa ra thao tác sửa nào"
         return
@@ -410,12 +465,11 @@ def process_item(
         mixed = work / "final_mix.wav"
         sf.write(mixed, mix, sr, subtype="FLOAT")
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cuts = [(a["start"], a["end"]) for a in actions if a["type"] == "cut"]
     visual = [a for a in actions if a["type"] != "cut"]
     if visual or cuts:
         with timed("render"):
             regions = video_edit.build_regions(visual, track_map, info, lambda t: vision.frame_at(video, t))
-            video_edit.render(video, mixed, out_path, info, regions, cuts)
+            video_edit.render(video, mixed, out_path, info, regions, cuts, audio_is_cut)
     else:
         with timed("mux"):
             media.mux(video, mixed, out_path)

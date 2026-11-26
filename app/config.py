@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     max_active_jobs_per_client: int = 5
     max_video_mb: int = 300
     # Allowlist domain (suffix, phân tách dấu phẩy). Trống = mọi host public.
-    video_url_allowlist: str = "bunnycdn.com,b-cdn.net,tiktokcdn.com,tiktokcdn-us.com,byteoversea.com,ibyteimg.com"
+    video_url_allowlist: str = "bunnycdn.com,b-cdn.net,tiktokcdn.com,tiktokcdn-us.com,byteoversea.com,ibyteimg.com,bytelemon.com"
     callback_url_allowlist: str = ""
     allow_http_urls: bool = False
     # Chỉ bật khi test local: cho phép tải/gọi URL trỏ vào IP nội bộ

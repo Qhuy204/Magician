@@ -10,6 +10,9 @@ from .vision import TextTrack, jpeg_data_url
 
 log = logging.getLogger(__name__)
 
+# remove_region lớn hơn tỉ lệ này của khung hình thì đổi thành cut
+MAX_INPAINT_AREA = 0.45
+
 SYSTEM = """You are the compliance editor for TikTok video ads. Given TikTok's rejection reasons, the voice-over transcript,
 the on-screen text detected by OCR (text tracks with ids, time ranges and normalized bounding boxes [x0,y0,x1,y1]),
 and video frames (one per second, each labelled with its timestamp), decide how to fix the ad with these tools:
@@ -31,15 +34,33 @@ Rules:
 - Do not invent product claims. replace_text must describe only what the ad already legitimately shows.
 - Use the given timestamps to locate violations, but check neighbouring frames: the same element often appears longer.
   Cover the whole time the element is visible.
-- Prefer the least destructive tool: replace_text/remove_text/remove_region before cut.
-- If the violation is about the product or business itself (gambling, chance-based rewards, apps whose core offer is
-  paying users cash for watching/playing, prohibited products, impersonation) the creative cannot be made compliant by
-  editing: return decision "unfixable". Same if violating content runs through most of the video, or the required cuts
-  exceed {max_cut_pct}% of the duration.
+- Prefer the least destructive tool: replace_text/remove_text/remove_region before cut. But when the violating element
+  fills most of the frame or the whole phone screen (e.g. a full-screen form or payout screen), use cut: inpainting
+  such a large area only produces a blur. A voice-over line that runs across the cut is fine when fix_audio is true
+  (the new line is generated for the shortened timeline).
+- First identify the product actually advertised from the visuals (end card, app name/logo, store badges, app UI) and
+  what it legitimately does. Report it in "product".
+- Distinguish a FALSE CLAIM about a legitimate product from a PROHIBITED PRODUCT:
+  * False claim (fixable): the product shown is a legitimate app (e.g. phone-to-phone data transfer/backup, call
+    filtering, caller ID), but the voice-over or on-screen text claims a prohibited capability it does not provide
+    (e.g. "see other people's WhatsApp chats by entering their number"). Fix it: fix_audio so the voice-over describes
+    only the product's real, legitimate function, and remove/cut every visual that depicts the false capability
+    (e.g. a screen where someone else's phone number is typed in to unlock their chats, captions repeating the claim).
+    The voice-over being the violating part throughout is NOT a reason for "unfixable" in this case: it is rewritten.
+    Judge the visuals as they will read AFTER the rewrite: ordinary app screens (a chat list, a conversation, photos)
+    are not violations by themselves when the new voice-over presents them as the user's own data (e.g. chats moved
+    from the old phone to the new one). Only shots that specifically show the false capability need remove/cut
+    (typing another person's number/name to unlock their data, "spy"/"hack" overlays, captions repeating the claim).
+    Count only those shots against the cut limit.
+  * Prohibited product (unfixable): the product itself provides the prohibited capability (spyware/stalkerware,
+    account hacking), or the business is prohibited (gambling, chance-based rewards, apps whose core offer is paying
+    users cash for watching/playing, prohibited products, impersonation).
+- Return "unfixable" also when the violating VISUALS run through most of the video, or the required cuts exceed
+  {max_cut_pct}% of the duration.
 - Violations outside the video (landing page, targeting, app store page) cannot be fixed here: list them in
   out_of_scope, and still fix what is in the video.
 Respond with JSON only:
-{"decision": "fix" | "unfixable", "reason": str, "fix_audio": bool, "sync_captions": bool,
+{"decision": "fix" | "unfixable", "reason": str, "product": str, "fix_audio": bool, "sync_captions": bool,
  "visual_actions": [{"type": "replace_text"|"remove_text"|"remove_region"|"cut", ...}],
  "out_of_scope": [str], "notes": str}"""
 
@@ -48,11 +69,15 @@ TRIAGE = """You review rejected TikTok video ads. Decide quickly, before any det
 made compliant by editing the creative (rewriting voice-over, replacing/removing on-screen text or graphics, cutting
 short shots).
 It cannot ("unfixable") when the violation is about the product or business itself (gambling, chance-based rewards,
-apps whose core offer is paying users cash for watching/playing, prohibited products, impersonation), or when
-violating content runs through most of the video.
+apps whose core offer is paying users cash for watching/playing, prohibited products such as spyware/stalkerware or
+account hacking tools, impersonation), or when violating VISUALS run through most of the video.
+Identify the product from the visuals (end card, app name/logo, store badges). If it is a legitimate app and the
+violation is a false claim in the voice-over or text about a capability the product does not provide (e.g. claiming a
+data-transfer app lets you read other people's chats), it is fixable: the voice-over can be fully rewritten to the
+product's real function and the shots depicting the false capability removed, even if the claim is in every spoken line.
 A single misleading pop-up, badge, caption or exaggerated claim on an otherwise legitimate product is fixable.
 Answer "unfixable" only when you are certain; when in doubt answer "fix" (a detailed planner checks again later).
-Respond with JSON only: {"decision": "fix" | "unfixable", "reason": str}"""
+Respond with JSON only: {"decision": "fix" | "unfixable", "reason": str, "product": str}"""
 
 
 def _frame_content(frames: list, violation_images: list[str]) -> list[dict]:
@@ -78,7 +103,8 @@ def triage(client: OpenAI, reasons: list[ReviewReason], segments: list[dict], fr
                                                *_frame_content(frames, violation_images)]}],
     )
     out = json.loads(r.choices[0].message.content or "{}")
-    return {"decision": "unfixable" if out.get("decision") == "unfixable" else "fix", "reason": out.get("reason", "")}
+    return {"decision": "unfixable" if out.get("decision") == "unfixable" else "fix", "reason": out.get("reason", ""),
+            "product": out.get("product", "")}
 
 
 def _track_digest(tracks: list[TextTrack], limit: int = 150) -> list[dict]:
@@ -137,6 +163,11 @@ def _validate(plan: dict, tracks: list[TextTrack], duration: float) -> dict:
                     continue
                 if x1 - x0 < 0.01 or y1 - y0 < 0.01:
                     continue
+                if (x1 - x0) * (y1 - y0) > MAX_INPAINT_AREA:
+                    # inpaint vùng gần cả khung chỉ ra 1 mảng nhoè => cắt cả đoạn
+                    act |= {"type": "cut", "what": f"{act['what']} (vùng quá lớn để xoá, chuyển sang cắt)"}
+                    actions.append(act)
+                    continue
                 act |= {"bbox": [x0, y0, x1, y1], "method": "blur" if a.get("method") == "blur" else "inpaint"}
             actions.append(act)
     cut_total = sum(a["end"] - a["start"] for a in actions if a["type"] == "cut")
@@ -147,7 +178,8 @@ def _validate(plan: dict, tracks: list[TextTrack], duration: float) -> dict:
     if decision == "fix" and not actions and not plan.get("fix_audio"):
         decision, reason = "unfixable", reason or "không tìm thấy vi phạm trong video để sửa"
     return {
-        "decision": decision, "reason": reason, "fix_audio": bool(plan.get("fix_audio")) and decision == "fix",
+        "decision": decision, "reason": reason, "product": plan.get("product", ""),
+        "fix_audio": bool(plan.get("fix_audio")) and decision == "fix",
         "sync_captions": bool(plan.get("sync_captions")) and decision == "fix",
         "visual_actions": actions if decision == "fix" else [], "out_of_scope": plan.get("out_of_scope") or [],
         "notes": plan.get("notes", ""),

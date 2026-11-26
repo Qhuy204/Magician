@@ -394,13 +394,14 @@ def cut_audio(audio: np.ndarray, sr: int, cuts: list[tuple[float, float]], fade:
     return out
 
 
-def render(video: Path, audio_wav: Path | None, out: Path, info: VideoInfo, regions: list[Region], cuts: list[tuple[float, float]]) -> None:
+def render(video: Path, audio_wav: Path | None, out: Path, info: VideoInfo, regions: list[Region],
+           cuts: list[tuple[float, float]], audio_is_cut: bool = False) -> None:
     """Decode từng frame, sửa frame trong các vùng, bỏ frame bị cắt, encode lại kèm audio đã cắt tương ứng."""
     cut_wav = out.with_suffix(".cut.wav")
     audio_args = ["-an"]
     if audio_wav:
         audio, sr = sf.read(audio_wav, dtype="float32", always_2d=True)
-        sf.write(cut_wav, cut_audio(audio, sr, cuts) if cuts else audio, sr, subtype="FLOAT")
+        sf.write(cut_wav, cut_audio(audio, sr, cuts) if cuts and not audio_is_cut else audio, sr, subtype="FLOAT")
         audio_args = ["-i", str(cut_wav), "-map", "0:v", "-map", "1:a", "-c:a", "aac", "-b:a", "192k", "-shortest"]
     w, h, size = info.width, info.height, info.width * info.height * 3
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-i", str(video), "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
