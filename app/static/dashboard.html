@@ -374,7 +374,7 @@ function renderStatus(st){
   const errs=Object.entries(sc.errors_last_hour||{});
   const errHtml=errs.length? `<span class="stat" style="color:var(--fail)">Lỗi 1h: ${errs.map(([k,v])=>esc(k)+'×'+v).join(' ')}</span>`:'';
   const paused = sc.paused? `<span class="stat"><span class="dot dot-bad"></span>Tạm ngưng nhận job</span>`:'';
-  const gpuHtml=(live.gpus||[]).map((g,i)=>`<span class="stat" title="${esc(g.name)}: ${g.util}% · VRAM ${g.vram_used_gb}/${g.vram_total_gb} GB">GPU${(live.gpus.length>1?i:'')} ${meter(g.util)} <b>${Math.round(g.util)}%</b> · VRAM ${meter(g.vram_used_gb/g.vram_total_gb*100)} <b>${g.vram_used_gb}G</b></span>`).join('');
+  const gpuHtml=(live.gpus||[]).map((g,i)=>`<span class="stat" title="${esc(g.name)}: ${g.util}% · VRAM ${g.vram_used_gb}/${g.vram_total_gb} GB">GPU${(live.gpus.length>1?i:'')} ${meter(g.util)} <b>${Math.round(g.util)}%</b> · VRAM ${meter(g.vram_used_gb/g.vram_total_gb*100)} <b>${g.vram_used_gb}/${g.vram_total_gb}G</b></span>`).join('');
   const cpuHtml=live.cpu_percent!=null?`<span class="stat">CPU ${meter(live.cpu_percent)} <b>${Math.round(live.cpu_percent)}%</b></span>`:'';
   const ramHtml=live.ram_percent!=null?`<span class="stat">RAM ${meter(live.ram_percent)} <b>${live.ram_used_gb}/${live.ram_total_gb}G</b></span>`:'';
   $('#statusStrip').innerHTML = `
