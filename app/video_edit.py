@@ -1,9 +1,7 @@
-"""Thực thi các thao tác sửa hình: xoá vùng (LaMa inpaint / blur), vẽ text mới, cắt đoạn, rồi encode lại video."""
+"""Thực thi các thao tác sửa hình: làm mờ vùng vi phạm, vẽ text mới, cắt đoạn, rồi encode lại video."""
 import logging
 import subprocess
 import tempfile
-import threading
-import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,8 +16,6 @@ from .vision import TextTrack, VideoInfo
 log = logging.getLogger(__name__)
 
 FONTS = Path(__file__).parent / "assets" / "fonts"
-_lama = None
-_lama_lock = threading.Lock()
 
 
 @dataclass
@@ -28,80 +24,9 @@ class Region:
     start: float
     end: float
     box: tuple[int, int, int, int]
-    method: str  # inpaint | blur | overlay (chỉ vẽ đè, không xoá gì: disclaimer)
-    overlay: np.ndarray | None = None  # RGBA vẽ đè sau khi xoá (text mới)
+    method: str  # blur | overlay (chỉ vẽ đè, không xoá gì: disclaimer, nhãn AIGC)
+    overlay: np.ndarray | None = None  # RGBA vẽ đè sau khi làm mờ (text mới)
     overlay_xy: tuple[int, int] = (0, 0)
-    ref: np.ndarray | None = None  # frame sạch ngay trước/sau lúc vùng xuất hiện, dùng khi nền đứng yên
-
-
-RING = 12
-STATIC_DIFF = 8.0
-
-
-def _ring(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
-    x0, y0, x1, y1 = box
-    H, W = img.shape[:2]
-    a = img[max(0, y0 - RING):min(H, y1 + RING), max(0, x0 - RING):min(W, x1 + RING)].astype(np.float32)
-    m = np.ones(a.shape[:2], bool)
-    m[y0 - max(0, y0 - RING):y1 - max(0, y0 - RING), x0 - max(0, x0 - RING):x1 - max(0, x0 - RING)] = False
-    return a[m]
-
-
-def _with_ref(regions: list[Region], info: VideoInfo, frame_at) -> None:
-    """Gắn frame sạch (trước khi vùng xuất hiện hoặc sau khi biến mất) cho từng vùng xoá."""
-    for r in regions:
-        if r.method == "overlay":
-            continue
-        t = r.start - 0.1 if r.start >= 0.1 else (r.end + 0.1 if r.end + 0.1 < info.duration else None)
-        if t is not None:
-            r.ref = frame_at(t)
-
-
-def _load_lama():
-    global _lama
-    if _lama is None:
-        import torch
-
-        path = settings.models_dir / "big-lama.pt"
-        if not path.exists():
-            path.parent.mkdir(parents=True, exist_ok=True)
-            log.info("downloading LaMa model to %s", path)
-            urllib.request.urlretrieve(settings.lama_url, path)
-        dev = detect().demucs_device
-        _lama = (torch.jit.load(str(path), map_location=dev).eval(), dev)
-    return _lama
-
-
-def inpaint(img: np.ndarray, mask: np.ndarray) -> np.ndarray:
-    """LaMa trên vùng crop quanh mask (đủ ngữ cảnh, cạnh dài <= 512) rồi dán lại phần bị mask."""
-    import cv2
-    import torch
-
-    ys, xs = np.where(mask)
-    if not len(xs):
-        return img
-    h, w = mask.shape
-    x0, x1, y0, y1 = xs.min(), xs.max() + 1, ys.min(), ys.max() + 1
-    mw, mh = x1 - x0, y1 - y0
-    cx0, cy0 = max(0, x0 - mw), max(0, y0 - mh)
-    cx1, cy1 = min(w, x1 + mw), min(h, y1 + mh)
-    crop, cmask = img[cy0:cy1, cx0:cx1], mask[cy0:cy1, cx0:cx1]
-    scale = min(1.0, 512 / max(crop.shape[:2]))
-    sw, sh = max(8, int(crop.shape[1] * scale) // 8 * 8), max(8, int(crop.shape[0] * scale) // 8 * 8)
-    small = cv2.resize(crop, (sw, sh), interpolation=cv2.INTER_AREA)
-    smask = cv2.resize(cmask.astype(np.uint8), (sw, sh), interpolation=cv2.INTER_NEAREST)
-    with _lama_lock:
-        model, dev = _load_lama()
-        # Tắt profiling executor của TorchScript: mỗi kích thước crop mới sẽ không bị tối ưu lại (~1.5s)
-        with torch.no_grad(), torch.jit.optimized_execution(False):
-            t_img = torch.from_numpy(small).permute(2, 0, 1)[None].float().div(255).to(dev)
-            t_mask = torch.from_numpy(smask)[None, None].float().to(dev)
-            out = model(t_img, t_mask)[0].permute(1, 2, 0).clamp(0, 1).mul(255).byte().cpu().numpy()
-    out = cv2.resize(out, (crop.shape[1], crop.shape[0]), interpolation=cv2.INTER_CUBIC)
-    alpha = cv2.GaussianBlur(cmask.astype(np.float32), (0, 0), 1.5)[..., None]
-    res = img.copy()
-    res[cy0:cy1, cx0:cx1] = (out * alpha + crop * (1 - alpha)).astype(np.uint8)
-    return res
 
 
 def blur(img: np.ndarray, box: tuple[int, int, int, int]) -> np.ndarray:
@@ -324,10 +249,9 @@ def _refine_region(a: dict, info: VideoInfo, frame_at) -> tuple[int, int, int, i
     return (max(0, px[0]), max(0, px[1]), min(info.width, px[2]), min(info.height, px[3]))
 
 
-def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: VideoInfo, frame_at,
-                  blur_only: bool = False) -> list[Region]:
-    """Chuyển action của planner thành vùng pixel; replace_text thì chuẩn bị sẵn ảnh text mới.
-    blur_only: mọi vùng đều làm mờ (replace_text cũng chỉ làm mờ text cũ, không vẽ text mới)."""
+def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: VideoInfo, frame_at) -> list[Region]:
+    """Chuyển action của planner thành vùng pixel; mọi xoá đều là làm mờ (không inpaint).
+    replace_text vẫn vẽ text mới đè lên vùng đã làm mờ."""
     regions = []
     for a in actions:
         if a["type"] in ("remove_text", "replace_text"):
@@ -335,8 +259,8 @@ def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: Video
             for gi, g in enumerate(groups):
                 start, end = max(0.0, min(t.start for t in g) - TIME_PAD), min(info.duration, max(t.end for t in g) + TIME_PAD)
                 box = _px_box(_union(g), info, 0.25)
-                reg = Region(start, end, box, "blur" if blur_only else "inpaint")
-                if a["type"] == "replace_text" and gi == 0 and not blur_only:
+                reg = Region(start, end, box, "blur")
+                if a["type"] == "replace_text" and gi == 0:
                     tb = _px_box(_union(g), info, 0.0)
                     first = min(g, key=lambda t: t.start)
                     fx0, fy0, fx1, fy1 = _px_box(first.bbox, info, 0.0)
@@ -356,12 +280,7 @@ def build_regions(actions: list[dict], tracks: dict[int, TextTrack], info: Video
         elif a["type"] == "remove_region":
             box = _refine_region(a, info, frame_at)
             x0, y0, x1, y1 = box
-            # Làm mờ 1 khối màu đặc vẫn để lại khối màu, nên mặc định inpaint; blur khi vùng quá lớn để inpaint,
-            # khi request ép blur, hoặc khi planner chọn blur (watermark/handle trong suốt không inpaint sạch được)
-            big = (x1 - x0) * (y1 - y0) > 0.2 * info.width * info.height
-            method = "blur" if blur_only or big or a.get("method") == "blur" else "inpaint"
-            regions.append(Region(max(0.0, a["start"] - TIME_PAD), min(info.duration, a["end"] + TIME_PAD), box, method))
-    _with_ref(regions, info, frame_at)
+            regions.append(Region(max(0.0, a["start"] - TIME_PAD), min(info.duration, a["end"] + TIME_PAD), box, "blur"))
     return regions
 
 
@@ -383,22 +302,6 @@ def _apply(frame: np.ndarray, t: float, regions: list[Region]) -> np.ndarray:
     active = [r for r in regions if r.start <= t < r.end]
     if not active:
         return frame
-    inp = []
-    for r in active:
-        if r.method != "inpaint":
-            continue
-        # Nền đứng yên (vd quay màn hình): chép lại đúng pixel nền từ frame sạch, đẹp hơn inpaint
-        if r.ref is not None and np.abs(_ring(frame, r.box) - _ring(r.ref, r.box)).mean() < STATIC_DIFF:
-            x0, y0, x1, y1 = r.box
-            frame[y0:y1, x0:x1] = r.ref[y0:y1, x0:x1]
-        else:
-            inp.append(r)
-    if inp:
-        mask = np.zeros(frame.shape[:2], bool)
-        for r in inp:
-            x0, y0, x1, y1 = r.box
-            mask[y0:y1, x0:x1] = True
-        frame = inpaint(frame, mask)
     for r in active:
         if r.method == "blur":
             frame = blur(frame, r.box)

@@ -73,42 +73,32 @@ def test_snap_cut_catches_crossfade(tmp_path):
     assert 3.95 <= e <= 4.1, e
 
 
-def test_remove_region_method_blur_passthrough():
-    # planner chọn blur cho watermark: method được giữ, vùng lớn cũng không bị đổi thành cut
+def test_remove_region_large_becomes_cut():
+    # vùng nhỏ giữ nguyên làm remove_region; vùng gần cả khung (>45%) đổi thành cut vì blur cả màn hình thì hỏng video
     plan = {"decision": "fix", "fix_audio": True, "visual_actions": [
-        {"type": "remove_region", "start": 0, "end": 19, "bbox": [0.0, 0.0, 0.35, 0.08], "what": "tiktok watermark @user",
-         "method": "blur"},
+        {"type": "remove_region", "start": 0, "end": 19, "bbox": [0.0, 0.0, 0.35, 0.08], "what": "tiktok watermark @user"},
         {"type": "remove_region", "start": 0, "end": 1, "bbox": [0.05, 0.05, 0.9, 0.9], "what": "big solid logo"}]}
     out = _validate(plan, [], 19.0)
     wm, logo = out["visual_actions"]
-    assert wm["type"] == "remove_region" and wm["method"] == "blur"
-    assert logo["type"] == "cut"  # inpaint vùng quá lớn vẫn thành cut
-    # mặc định là inpaint
-    plan["visual_actions"] = [{"type": "remove_region", "start": 0, "end": 5, "bbox": [0.2, 0.2, 0.5, 0.3], "what": "popup"}]
-    assert _validate(plan, [], 19.0)["visual_actions"][0]["method"] == "inpaint"
+    assert wm["type"] == "remove_region" and wm["bbox"] == [0.0, 0.0, 0.35, 0.08]
+    assert logo["type"] == "cut"
 
 
-def test_build_regions_respects_action_method(tmp_path):
+def test_build_regions_all_blur(tmp_path):
+    """Mọi vùng xoá đều blur (không còn inpaint); replace_text vẫn có overlay text mới."""
     import subprocess
 
     from app import video_edit, vision
 
     v = tmp_path / "w.mp4"
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x568:duration=2:rate=15",
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x568:duration=2:rate=15",
                     "-pix_fmt", "yuv420p", str(v)], check=True)
     info = vision.video_info(v)
     actions = [
-        {"type": "remove_region", "start": 0.0, "end": 2.0, "bbox": [0.0, 0.0, 0.3, 0.06], "method": "blur"},
-        {"type": "remove_region", "start": 0.0, "end": 2.0, "bbox": [0.3, 0.4, 0.5, 0.5], "method": "inpaint"},
+        {"type": "remove_region", "start": 0.0, "end": 2.0, "bbox": [0.0, 0.0, 0.3, 0.06]},
+        {"type": "remove_region", "start": 0.0, "end": 2.0, "bbox": [0.3, 0.4, 0.5, 0.5]},
     ]
     regions = video_edit.build_regions(actions, {}, info, lambda t: vision.frame_at(v, t))
-    methods = sorted(r.method for r in regions)
-    assert methods == ["blur", "inpaint"]
-    # không khai method thì vùng nhỏ là inpaint, blur_only thì tất cả blur
-    actions[0].pop("method")
-    regions = video_edit.build_regions(actions, {}, info, lambda t: vision.frame_at(v, t))
-    assert all(r.method == "inpaint" for r in regions)
-    regions = video_edit.build_regions(actions, {}, info, lambda t: vision.frame_at(v, t), blur_only=True)
     assert all(r.method == "blur" for r in regions)
 
 

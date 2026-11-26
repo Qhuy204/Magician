@@ -13,7 +13,7 @@ from .vision import TextTrack, jpeg_data_url
 log = logging.getLogger(__name__)
 
 # remove_region lớn hơn tỉ lệ này của khung hình thì đổi thành cut
-MAX_INPAINT_AREA = 0.45
+MAX_BLUR_AREA = 0.45
 # remove_region lớn hơn tỉ lệ này tính vào giới hạn thời lượng như cut
 LARGE_AREA = 0.3
 VERDICTS = ("fixed_in_video", "outside_video", "unfixable", "not_found")
@@ -38,8 +38,7 @@ per second, each labelled with its timestamp), decide how to fix the ad with the
 - remove_region {start, end, bbox, what, method}: erase a non-text graphic (pop-up, banner, cash counter, badge,
   watermark, creator handle, TikTok logo, unauthorized brand logo, QR code, fake button, someone's personal data)
   inside bbox during [start, end]. The bbox must enclose the whole graphic including its text, shadow and border.
-  method is "inpaint" (default) or "blur": use "blur" for ALL watermarks, creator handles and third-party logos
-  (brand logos, TikTok logo), whether semi-transparent or solid. Watermarks/handles/logos must be blurred even
+  every removal is done by blurring the region. Watermarks/handles/third-party logos must be blurred even
   when no rejection reason mentions them.
 - cut {start, end, what}: drop a time range from the video and audio, for shots whose whole content violates policy
   (e.g. a full-screen payout screen, a suggestive or gory shot). Cuts must not split a spoken sentence and should
@@ -53,7 +52,7 @@ Policy:
 - Follow "policy.global_rules" and every playbook in "policy.playbooks". "policy.reason_groups" maps each rejection
   reason (by index) to its policy groups.
 - Never blur or pixelate to hide something: covering images with blur/pixels is itself a TikTok violation. Remove with
-  remove_region (inpaint) or cut.
+  remove_region (blur) or cut.
 - For each rejection reason output one finding:
   {"reason_index", "group", "verdict", "fix"}, verdict one of:
   * "fixed_in_video": the actions you list remove this violation from the video,
@@ -73,7 +72,7 @@ Rules:
 - Use the given timestamps to locate violations, but check neighbouring frames: the same element often appears longer.
   Cover the whole time the element is visible.
 - Prefer the least destructive tool: replace_text/remove_text/remove_region before cut. But when the violating element
-  fills most of the frame or the whole phone screen (e.g. a full-screen form or payout screen), use cut: inpainting
+  fills most of the frame or the whole phone screen (e.g. a full-screen form or payout screen), use cut: blurring
   such a large area only produces a blur. A voice-over line that runs across the cut is fine when fix_audio is true
   (the new line is generated for the shortened timeline).
 - First identify the product actually advertised from the visuals (end card, app name/logo, store badges, app UI) and
@@ -281,14 +280,12 @@ def _validate(plan: dict, tracks: list[TextTrack], duration: float, n_reasons: i
                     continue
                 if x1 - x0 < 0.01 or y1 - y0 < 0.01:
                     continue
-                method = "blur" if a.get("method") == "blur" else "inpaint"
-                if method == "inpaint" and (x1 - x0) * (y1 - y0) > MAX_INPAINT_AREA:
-                    # inpaint vùng gần cả khung chỉ ra 1 mảng nhoè => cắt cả đoạn
-                    # (vùng blur thì không bị vấn đề này, nhưng vẫn tính vào giới hạn cắt ở dưới)
-                    act |= {"type": "cut", "what": f"{act['what']} (vùng quá lớn để xoá, chuyển sang cắt)"}
+                if (x1 - x0) * (y1 - y0) > MAX_BLUR_AREA:
+                    # làm mờ vùng gần cả khung thì video hỏng hình => cắt cả đoạn
+                    act |= {"type": "cut", "what": f"{act['what']} (vùng quá lớn để làm mờ, chuyển sang cắt)"}
                     actions.append(act)
                     continue
-                act |= {"bbox": [x0, y0, x1, y1], "method": method}
+                act |= {"bbox": [x0, y0, x1, y1]}
             actions.append(act)
     cut_total = sum(a["end"] - a["start"] for a in actions
                     if a["type"] == "cut" or (a["type"] == "remove_region" and _area(a["bbox"]) > LARGE_AREA))

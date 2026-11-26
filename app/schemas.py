@@ -64,7 +64,7 @@ class AdItem(BaseModel):
     # Sản phẩm thật đang quảng cáo (vd "Shieldy - call app: caller ID, spam blocking"). Ghi đè JobRequest.product.
     # Planner coi đây là sự thật về sản phẩm, kể cả khi creative là footage lấy từ nơi khác.
     product: str | None = None
-    # auto: planner chọn inpaint / thay chữ / blur; blur: mọi chỗ sửa hình đều làm mờ. Ghi đè JobRequest.visual_method
+    # deprecated: pipeline chỉ còn làm mờ (không inpaint); giữ field để tương thích, bỏ qua giá trị
     visual_method: Literal["auto", "blur"] | None = None
     # Caption của ad và URL trang đích (nếu dashboard có): viết lại caption theo policy + kiểm tra landing page
     ad_text: str | None = None

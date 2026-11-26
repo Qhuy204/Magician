@@ -29,14 +29,14 @@ dùng công cụ nào dựa trên lý do reject và danh mục policy TikTok (`a
 
 | # | Bước | Công cụ |
 |---|---|---|
-| 1 | Tải `video_url` (chỉ domain trong allowlist, tối đa 300MB) | httpx |
+| 1 | Tải `video_url` (chỉ domain trong allowlist, tối đa 300MB). Video dài quá `MAX_VIDEO_SECONDS` (mặc định 180s) bị từ chối ngay (`invalid_input`) | httpx |
 | 2 | **Phân loại policy**: mỗi lý do reject → nhóm policy TikTok (20 nhóm + Pangle), lấy playbook của nhóm đó | Từ khoá trong catalog, không chắc thì hỏi `VISION_MODEL` |
 | 3 | Tách giọng nói khỏi nhạc nền, cắt câu theo khoảng lặng, transcribe từng câu | Demucs `htdemucs` + OpenAI `gpt-transcribe` |
 | 4 | **Triage**: sản phẩm thuộc loại bị cấm thì dừng ngay (chạy song song với OCR) | `VISION_MODEL` + frame 1 giây/lần |
 | 5 | OCR text trên màn hình, gom thành "text track" (nội dung, vị trí, thời gian) | EasyOCR (GPU) |
 | 6 | **Planner** chọn công cụ cho từng vi phạm theo playbook, kết luận cho từng lý do reject, liệt kê việc ngoài video | `VISION_MODEL` |
 | 7 | Sửa voice-over nếu cần: viết lại câu vi phạm, clone giọng, ghép lại | `gpt-6-luna` + OmniVoice / XTTS |
-| 8 | Sửa hình: xoá text/pop-up/logo/QR, vẽ text mới, cắt đoạn (mốc cắt tự dời về ranh giới cảnh), chèn disclaimer, nhãn "AI-generated voice" | LaMa inpaint, ffmpeg drawtext |
+| 8 | Sửa hình: làm mờ text/pop-up/logo/QR/watermark vi phạm, vẽ text mới đè lên vùng đã mờ, cắt đoạn (mốc cắt tự dời về ranh giới cảnh), chèn disclaimer, nhãn "AI-generated voice" | blur, ffmpeg drawtext |
 | 9 | Encode lại video (hoặc chỉ thay audio nếu hình không đổi) | ffmpeg / libx264 |
 | 10 | **Recheck**: transcribe audio mới + xem frame video kết quả, đối chiếu lý do reject. Còn vi phạm thì sửa thêm 1 lượt, vẫn còn thì `needs_review` | `gpt-transcribe` + `VISION_MODEL` |
 | 11 | Viết lại caption (`ad_text`), kiểm tra landing page (`landing_page_url`) nếu request có | `REWRITE_MODEL`, httpx |
@@ -47,9 +47,9 @@ Công cụ planner có thể chọn:
 |---|---|---|
 | `fix_audio` | Lời thoại vi phạm | Viết lại câu vi phạm cùng ngôn ngữ, đọc bằng giọng clone, vừa khung thời gian cũ |
 | `sync_captions` | Có phụ đề in sẵn lặp lại lời thoại | Phụ đề của câu bị sửa được thay bằng câu mới, cùng vị trí / màu / cỡ chữ |
-| `replace_text` | Text vi phạm có cách nói hợp lệ, text sai chính tả / viết hoa / ký hiệu loạn | Xoá text cũ, vẽ text mới cùng vị trí, màu chữ + viền lấy từ text cũ |
-| `remove_text` | Text vi phạm, không cần thay | Xoá text |
-| `remove_region` | Pop-up, banner, số tiền, badge, QR code, nút giả, dữ liệu cá nhân | Inpaint; nền đứng yên thì chép lại nền từ frame sạch. Vùng > 45% khung hình tự đổi thành `cut`. **Watermark, handle, logo bên thứ 3** (kể cả logo TikTok): luôn làm mờ (`method: blur`), kể cả khi lý do reject không nhắc tới |
+| `replace_text` | Text vi phạm có cách nói hợp lệ, text sai chính tả / viết hoa / ký hiệu loạn | Làm mờ text cũ, vẽ text mới đè lên cùng vị trí, màu chữ + viền lấy từ text cũ |
+| `remove_text` | Text vi phạm, không cần thay | Làm mờ text |
+| `remove_region` | Pop-up, banner, số tiền, badge, QR code, nút giả, dữ liệu cá nhân, **watermark/handle/logo bên thứ 3** (kể cả khi lý do reject không nhắc) | Làm mờ vùng. Vùng > 45% khung hình tự đổi thành `cut` |
 | `cut` | Cả shot vi phạm (màn hình rút tiền, cảnh gợi dục, máu me...) | Bỏ đoạn đó khỏi cả hình lẫn tiếng; tổng thời lượng cắt + xoá vùng lớn tối đa `MAX_CUT_RATIO` (35%) |
 | `add_disclaimer` | Ngành bắt buộc disclaimer (tài chính, rượu, cờ bạc, sức khoẻ, giảm cân) hoặc promotion cần "Terms apply" | Dòng chữ trên nền mờ ở vùng an toàn, đúng ngôn ngữ của ad (en / es / pt / ar / fr / de / it) |
 | (tự động) nhãn AIGC | Voice-over đã được clone | "AI-generated voice" / "Voz generada con IA"... ở trên cùng, kèm `action_required: aigc_label` |
@@ -232,7 +232,7 @@ Field thừa được giữ nguyên, không gây lỗi. Ví dụ format mới:
 | `ad_text` (alias `ad_texts[0]`, `caption`, `ad_caption`) | | Caption của ad: được viết lại theo policy, trả về `ad_text_fix` |
 | `landing_page_url` (alias `landing_url`, `landing_page`, `click_url`, `store_url`, `app_url`, `deeplink`) | | Trang đích: được kiểm tra, trả về `landing_page` |
 | `call_to_action` | | CTA, dùng khi viết lại caption |
-| `visual_method` | | `auto` (mặc định `VISUAL_METHOD`): inpaint / thay chữ / blur tuỳ chỗ. `blur`: mọi chỗ sửa hình đều làm mờ, kể cả text (không vẽ chữ mới). **Cảnh báo:** policy Ad format cấm che hình bằng blur/pixel, nên item có blur sẽ kèm `action_required: review` và có thể bị reject lại. Cấp job hoặc từng ad |
+| `visual_method` | | deprecated: pipeline chỉ còn làm mờ (không còn inpaint). Field vẫn nhận để tương thích nhưng bỏ qua |
 | `callback_url` | | Webhook nhận kết quả, chỉ https |
 | `process_statuses` | | Mặc định `["UNAVAILABLE","PART_AVAILABLE"]` |
 
@@ -549,7 +549,7 @@ Khuyến nghị thêm ở phía Cloudflare: WAF rule chỉ cho IP của dashboar
 | `VISION_MODEL` | `gpt-6-luna` | Model đọc frame, triage + lập kế hoạch sửa (phải nhận ảnh) |
 | `OCR_FPS` / `PLANNER_FPS` / `MAX_PLANNER_FRAMES` | `2` / `1` / `60` | Mật độ frame cho OCR và cho planner |
 | `MAX_CUT_RATIO` | `0.35` | Thời lượng cắt + thời lượng xoá vùng lớn (> 30% khung) vượt tỉ lệ này thì coi là không sửa được |
-| `VISUAL_METHOD` | `auto` | Mặc định cho `visual_method` của request: `auto` hoặc `blur` |
+| `MAX_VIDEO_SECONDS` | `180` | Video dài hơn bị từ chối (`invalid_input`) |
 | `RECHECK` / `RECHECK_RETRY` | `true` / `true` | Kiểm tra lại video sau khi sửa / sửa thêm 1 lượt nếu còn vi phạm |
 | `AIGC_OVERLAY` | `true` | Chèn nhãn "AI-generated voice" khi voice-over được clone |
 | `VIDEO_CRF` | `18` | Chất lượng encode lại (thấp = đẹp hơn, file nặng hơn) |
@@ -682,9 +682,11 @@ Timeline của 1 job (mỗi lần chạy, retry, lỗi): `GET /jobs/{id}/events`
   dùng cho quảng cáo thật.
 - **OmniVoice nói ngôn ngữ khác giọng gốc:** giọng Arab đọc tiếng Bồ Đào Nha bị ASR nhận sai ~20% ký tự (giọng nặng).
   Khi giọng mẫu và câu mới cùng ngôn ngữ (trường hợp bình thường của pipeline) thì không gặp.
-- **Sửa hình:** inpaint đẹp nhất khi nền đứng yên (quay màn hình); nền chuyển động nhanh có thể thấy vệt mờ.
+- **Sửa hình:** mọi xoá đều là làm mờ — vùng bị mờ nhìn thấy được (không liền lạc như inpaint), là trade-off để render nhanh.
   Text mới dùng font Noto (Arab / Devanagari / Latin), màu chữ + viền đoán từ text cũ, chưa bắt chước được font đặc biệt
   hay hiệu ứng (gradient, bóng đổ, chữ chạy). OCR có thể sót text nhỏ hoặc text nghiêng.
+  Policy Ad format cấm che hình bằng blur/pixel: vùng mờ nhỏ (watermark, caption) thường vẫn qua, nhưng ad có thể bị reject
+  lại nếu vùng mờ lớn — trường hợp đó planner đã tự chuyển sang cắt thay vì làm mờ.
 - **Tốc độ OCR:** ~0.4s/frame trên RTX 3060 (video 45s đổi cảnh liên tục mất ~40s; màn hình tĩnh nhanh hơn nhiều).
 - **Link video:** link Bunny/TikTok trong JSON hết hạn sau khoảng 1 giờ, phải gửi job ngay sau khi lấy JSON.
 - **Kết quả rewrite:** không cố định giữa các lần chạy; cùng một video có lần model sửa, có lần từ chối.

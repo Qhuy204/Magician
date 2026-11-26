@@ -17,6 +17,7 @@ import soundfile as sf
 from openai import OpenAI
 
 from . import media, policies, recheck, runctx, video_edit, vision
+from .errors import InvalidInput
 from .config import settings
 from .rewrite import lengthen, plan_edits, shorten
 from .planner import plan_fix, triage
@@ -398,6 +399,8 @@ def _fix_pass(ctx: dict, video: Path, work: Path, out_path: Path, feedback: list
     work.mkdir(parents=True, exist_ok=True)
     video_key = _digest(video.read_bytes())
     info = vision.video_info(video)
+    if info.duration > settings.max_video_seconds:
+        raise InvalidInput(f"video dài {info.duration:.0f}s, vượt giới hạn {settings.max_video_seconds}s")
     has_audio = media.has_audio(video)
 
     # --- phân tích audio: tách giọng + transcript ---
@@ -496,19 +499,16 @@ def _fix_pass(ctx: dict, video: Path, work: Path, out_path: Path, feedback: list
         sf.write(mixed, mix, sr, subtype="FLOAT")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     visual = [a for a in actions if a["type"] != "cut"]
-    blur_only = item.visual_method == "blur"
     if visual or cuts:
         with timed("render"):
-            regions = video_edit.build_regions(visual, track_map, info, lambda t: vision.frame_at(video, t),
-                                               blur_only=blur_only)
+            regions = video_edit.build_regions(visual, track_map, info, lambda t: vision.frame_at(video, t))
             video_edit.render(video, mixed, out_path, info, regions, cuts, audio_is_cut)
     else:
         with timed("mux"):
             media.mux(video, mixed, out_path)
     result.visual_edits += [
         {**a, "pass": ctx["pass_no"],
-         **({"texts": [track_map[i].text for i in a["track_ids"]]} if "track_ids" in a else {}),
-         **({"method": "blur"} if blur_only and a["type"] not in ("cut", "add_disclaimer", "aigc_label") else {})}
+         **({"texts": [track_map[i].text for i in a["track_ids"]]} if "track_ids" in a else {})}
         for a in actions]
     return True
 
@@ -630,11 +630,6 @@ def process_item(
         required.append({"type": "ad_text", "detail": "Caption vi phạm, cần viết caption mới: " + "; ".join(fix["issues"])})
     if (lp := result.landing_page) and lp.get("ok") is False:
         required.append({"type": "landing_page", "detail": "; ".join(lp.get("issues") or [])[:500]})
-    if item.visual_method == "blur" and any(a.get("method") == "blur" for a in result.visual_edits):
-        required.append({"type": "review", "detail": "Đã dùng blur: TikTok cấm che hình bằng blur/pixel (Ad format), "
-                                                     "có thể bị reject lại; nên dùng visual_method=auto."})
-    seen = set()
-    result.action_required = [a for a in required if not ((a["type"], a["detail"]) in seen or seen.add((a["type"], a["detail"])))]
 
     if rendered:
         if result.compliance_check and not result.compliance_check["passed"]:

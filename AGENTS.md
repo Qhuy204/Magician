@@ -37,9 +37,9 @@ tuỳ chọn XTTS-v2; mẫu từ chính vocal stem) → OmniVoice `duration` / a
   chọn tool: fix_audio / sync_captions / replace_text / remove_text / remove_region / cut / unfixable. Guardrail: vi phạm ở
   bản chất sản phẩm (cờ bạc, app trả tiền khi xem) → unfixable, không che/né.
 - `app/vision.py`: EasyOCR 2fps → text track (gộp box cùng vị trí + nội dung; frame tĩnh dùng lại kết quả OCR).
-- `app/video_edit.py`: LaMa torchscript (`MODELS_DIR/big-lama.pt`, phải `torch.jit.optimized_execution(False)` nếu không
-  mỗi kích thước crop mới mất 1.5s), nền tĩnh thì chép pixel từ frame sạch; text mới vẽ bằng ffmpeg drawtext (PIL trên
-  Windows không có raqm nên không nối chữ Arab được); màu chữ đoán bằng diff với frame sạch + k-means.
+- `app/video_edit.py`: không còn inpaint — mọi vùng xoá đều làm mờ (blur), replace_text vẽ text mới đè lên vùng đã mờ;
+  text mới vẽ bằng ffmpeg drawtext (PIL trên Windows không có raqm nên không nối chữ Arab được);
+  màu chữ đoán bằng diff với frame sạch + k-means. Video > `MAX_VIDEO_SECONDS` (180s) bị từ chối ngay sau download.
 - `pip install easyocr` kéo torch PyPI ghi đè bản CUDA → luôn cài lại torch/torchvision từ index cu128 sau đó.
 - Test: `data/test/visual/run_item.py <ad.json> <video.mp4> <tag>` (ad_synth*.json + synthetic*.mp4 tự tạo; ad_arabic3.json = TopDrama → unfixable).
 
