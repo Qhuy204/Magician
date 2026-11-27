@@ -32,7 +32,17 @@ services:
   magician-amd:
     <<: *base
     profiles: [amd]
-    build: { context: ., args: { TORCH_VARIANT: rocm6.4, XTTS_TORCH_VARIANT: rocm6.2 } }
+    # TheRock: ROCm chính thức AMD, torch 2.15, kernel native gfx1032 (RX 6600) — không cần HSA_OVERRIDE.
+    # THEROCK_DEVICE đổi theo GPU: gfx1032=RX6600/6650, gfx1100=RX7900, ... hoặc device-all cho chắc.
+    build:
+      context: .
+      args:
+        TORCH_VARIANT: therock
+        TORCH_VERSION: "2.15.0+rocm10.2.0"
+        TORCHVISION_VERSION: "0.29.0+rocm10.2.0"
+        TORCHAUDIO_VERSION: "2.11.0.3+rocm10.2.0"
+        THEROCK_DEVICE: device-gfx1032
+        XTTS_TORCH_VARIANT: rocm6.2
     image: magician:rocm
     devices:
       - /dev/kfd
@@ -40,7 +50,7 @@ services:
     # không group_add: GID render/video khác nhau tùy máy host, docker-entrypoint.sh tự chỉnh lúc runtime
     security_opt:
       - seccomp=unconfined
-    # GPU consumer chưa nằm trong danh sách ROCm hỗ trợ chính thức (vd RX 6700 XT) cần ép gfx version, vd 10.3.0
+    # Chỉ cần khi quay lại TORCH_VARIANT=rocm6.4 (torch 2.8 không build kernel cho gfx1032):
     # environment:
     #   HSA_OVERRIDE_GFX_VERSION: "10.3.0"
 

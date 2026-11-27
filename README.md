@@ -88,7 +88,9 @@ docker compose --profile amd up -d --build      # cần driver ROCm trên host
 docker compose --profile cpu up -d --build
 ```
 - Model (~2GB) được tải lần đầu vào volume `models`. Muốn đóng gói sẵn vào image: `--build-arg PRELOAD_MODELS=1`.
-- AMD consumer GPU chưa có trong danh sách ROCm hỗ trợ có thể cần `HSA_OVERRIDE_GFX_VERSION` (xem `docker-compose.yml`).
+- Profile `amd` dùng torch TheRock (ROCm chính thức AMD, kernel native kể cả gfx1032/RX 6600) — chỉnh `THEROCK_DEVICE` trong
+  `docker-compose.yml` theo GPU. `HSA_OVERRIDE_GFX_VERSION` chỉ cần khi quay lại variant `rocm6.4` cũ.
+  Lưu ý: Docker Desktop trên Windows không passthrough được GPU AMD — profile amd chỉ chạy trên Linux host.
 
 ### Mac Apple Silicon
 Docker trên Mac không dùng được GPU, chạy native:

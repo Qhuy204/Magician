@@ -1,10 +1,14 @@
 # syntax=docker/dockerfile:1
 # Build:
 #   NVIDIA: docker build -t magician:cuda .
-#   AMD:    docker build -t magician:rocm --build-arg TORCH_VARIANT=rocm6.4 --build-arg XTTS_TORCH_VARIANT=rocm6.2 .
+#   AMD:    docker build -t magician:rocm --build-arg TORCH_VARIANT=therock .
+#           (fallback cũ: TORCH_VARIANT=rocm6.4 XTTS_TORCH_VARIANT=rocm6.2 — torch 2.8 wheel pytorch.org,
+#            gfx1032/RX6600 phải ép HSA_OVERRIDE_GFX_VERSION=10.3.0)
 #   CPU:    docker build -t magician:cpu  --build-arg TORCH_VARIANT=cpu --build-arg XTTS_TORCH_VARIANT=cpu .
 # Thêm engine XTTS (env riêng, +~5GB): --build-arg INSTALL_XTTS=1
 # Apple Silicon: Docker trên Mac không truy cập được GPU (Metal), chạy native bằng scripts/run_mac.sh.
+# LƯU Ý: image này chỉ dùng được GPU AMD khi chạy trên Linux host có /dev/kfd|dri —
+# Docker Desktop trên Windows không passthrough được GPU AMD vào container, bất kể torch bên trong là gì.
 
 ARG PYTHON_VERSION=3.11
 
@@ -12,16 +16,28 @@ FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
 ARG TORCH_VARIANT=cu128
 ARG TORCH_VERSION=2.8.0
 ARG TORCHVISION_VERSION=0.23.0
+ARG TORCHAUDIO_VERSION=
 ARG INSTALL_XTTS=0
 ARG XTTS_TORCH_VARIANT=cu121
+# TheRock (ROCm chính thức của AMD, torch 2.15+): kernel native cho cả gfx1032/RX6600.
+# THEROCK_DEVICE=device-all an toàn mọi card; thu hẹp theo GPU (vd device-gfx1032) cho image nhẹ hơn.
+ARG THEROCK_INDEX=https://stable.repo.amd.com/rocm/pytorch/whl-next/
+ARG THEROCK_DEVICE=device-all
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential \
     && rm -rf /var/lib/apt/lists/*
 ENV PIP_NO_CACHE_DIR=1 PIP_DISABLE_PIP_VERSION_CHECK=1
 COPY requirements.txt requirements-xtts.txt /tmp/
 # Cài torch bản GPU trước rồi khoá version: easyocr kéo torchvision từ PyPI sẽ ghi đè torch nếu không pin
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install torch==${TORCH_VERSION} torchaudio==${TORCH_VERSION} torchvision==${TORCHVISION_VERSION} \
-       --index-url https://download.pytorch.org/whl/${TORCH_VARIANT} \
+    && if [ "$TORCH_VARIANT" = "therock" ]; then \
+         /opt/venv/bin/pip install --index-url "$THEROCK_INDEX" \
+           "torch[${THEROCK_DEVICE}]==${TORCH_VERSION}" \
+           "torchvision[${THEROCK_DEVICE}]==${TORCHVISION_VERSION}" \
+           "torchaudio==${TORCHAUDIO_VERSION:-$TORCH_VERSION}"; \
+       else \
+         /opt/venv/bin/pip install torch==${TORCH_VERSION} torchaudio==${TORCHAUDIO_VERSION:-$TORCH_VERSION} torchvision==${TORCHVISION_VERSION} \
+           --index-url https://download.pytorch.org/whl/${TORCH_VARIANT}; \
+       fi \
     && /opt/venv/bin/pip freeze | grep -E "^(torch|torchaudio|torchvision)==" > /tmp/torch-pin.txt \
     && /opt/venv/bin/pip install -r /tmp/requirements.txt -c /tmp/torch-pin.txt
 RUN mkdir -p /opt/xtts && if [ "$INSTALL_XTTS" = "1" ]; then \
