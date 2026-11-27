@@ -31,7 +31,9 @@ COPY requirements.txt requirements-xtts.txt /tmp/
 # Cài torch bản GPU trước rồi khoá version: easyocr kéo torchvision từ PyPI sẽ ghi đè torch nếu không pin
 RUN python -m venv /opt/venv \
     && if [ "$TORCH_VARIANT" = "therock" ]; then \
-         /opt/venv/bin/pip install --index-url "$THEROCK_INDEX" --extra-index-url https://pypi.org/simple \
+         /opt/venv/bin/pip install --index-url "$THEROCK_INDEX" \
+           --extra-index-url https://stable.repo.amd.com/rocm/core/whl-next/ \
+           --extra-index-url https://pypi.org/simple \
            "torch[${THEROCK_DEVICE}]==${TORCH_VERSION}" \
            "torchvision[${THEROCK_DEVICE}]==${TORCHVISION_VERSION}" \
            "torchaudio==${TORCHAUDIO_VERSION:-$TORCH_VERSION}"; \
