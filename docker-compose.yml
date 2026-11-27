@@ -32,13 +32,13 @@ services:
   magician-amd:
     <<: *base
     profiles: [amd]
-    # TheRock: ROCm chính thức AMD, torch 2.15, kernel native gfx1032 (RX 6600) — không cần HSA_OVERRIDE.
+    # TheRock: ROCm chính thức AMD, torch 2.14, kernel native gfx1032 (RX 6600) — không cần HSA_OVERRIDE.
     # THEROCK_DEVICE đổi theo GPU: gfx1032=RX6600/6650, gfx1100=RX7900, ... hoặc device-all cho chắc.
     build:
       context: .
       args:
         TORCH_VARIANT: therock
-        TORCH_VERSION: "2.15.0+rocm10.2.0"
+        TORCH_VERSION: "2.14.0+rocm10.2.0"   # torchvision 0.29.0 (bản mới nhất) pin đúng torch 2.14.0
         TORCHVISION_VERSION: "0.29.0+rocm10.2.0"
         TORCHAUDIO_VERSION: "2.11.0.3+rocm10.2.0"
         THEROCK_DEVICE: device-gfx1032

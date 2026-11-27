@@ -19,7 +19,7 @@ ARG TORCHVISION_VERSION=0.23.0
 ARG TORCHAUDIO_VERSION=
 ARG INSTALL_XTTS=0
 ARG XTTS_TORCH_VARIANT=cu121
-# TheRock (ROCm chính thức của AMD, torch 2.15+): kernel native cho cả gfx1032/RX6600.
+# TheRock (ROCm chính thức của AMD, torch 2.14+): kernel native cho cả gfx1032/RX6600.
 # THEROCK_DEVICE=device-all an toàn mọi card; thu hẹp theo GPU (vd device-gfx1032) cho image nhẹ hơn.
 ARG THEROCK_INDEX=https://stable.repo.amd.com/rocm/pytorch/whl-next/
 # rocm meta-package + rocm-sdk-device-gfx* (runtime ROCm) nằm ở index core/, không phải pytorch/
