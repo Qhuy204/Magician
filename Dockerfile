@@ -49,6 +49,8 @@ ENV PATH=/opt/venv/bin:$PATH \
     XTTS_PYTHON=/opt/xtts/bin/python
 WORKDIR /app
 COPY --chown=magician app ./app
+# Container start as root để entrypoint chỉnh group theo GID thật của /dev/kfd|dri (ROCm),
+# rồi drop xuống magician — xem docker-entrypoint.sh
 USER magician
 
 # Tải sẵn model (Demucs, OmniVoice, EasyOCR ar/hi/pt, LaMa) vào image: --build-arg PRELOAD_MODELS=1
@@ -58,7 +60,10 @@ RUN if [ "$PRELOAD_MODELS" = "1" ]; then \
       && curl -fsSL -o /models/app/big-lama.pt https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt; \
     fi
 
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+USER root
 VOLUME ["/models", "/app/data"]
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s CMD curl -fs http://localhost:8000/health || exit 1
+ENTRYPOINT ["bash", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers"]

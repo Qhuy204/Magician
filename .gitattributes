@@ -2,3 +2,4 @@
 *.ttf binary
 *.png binary
 *.mp4 binary
+*.sh text eol=lf

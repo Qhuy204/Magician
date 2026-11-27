@@ -122,3 +122,6 @@ tuỳ chọn XTTS-v2; mẫu từ chính vocal stem) → OmniVoice `duration` / a
 - CDN TikTok (VN) drop SYN ngẫu nhiên theo IP (~30% connect timeout): `media.download` retry nhanh trong hàm
   (`download_attempts`=4, connect timeout 8s thay vì 30s), scheduler retry chỉ là lớp cuối. Mỗi lần connect là
   independent nên 4 lần đủ chặn hầu hết flake.
+- ROCm Docker: KHÔNG dùng `group_add` trong compose — group `render` không tồn tại trong base image (crash
+  "unable to find group render") và GID host khác nhau tùy máy. `docker-entrypoint.sh` start as root, đọc GID thật
+  của /dev/kfd + /dev/dri/renderD*, tạo group đúng GID cho user magician, rồi drop privileges bằng runuser.

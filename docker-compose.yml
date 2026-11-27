@@ -37,9 +37,7 @@ services:
     devices:
       - /dev/kfd
       - /dev/dri
-    group_add:
-      - video
-      - render
+    # không group_add: GID render/video khác nhau tùy máy host, docker-entrypoint.sh tự chỉnh lúc runtime
     security_opt:
       - seccomp=unconfined
     # GPU consumer chưa nằm trong danh sách ROCm hỗ trợ chính thức (vd RX 6700 XT) cần ép gfx version, vd 10.3.0
